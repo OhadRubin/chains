@@ -355,6 +355,6 @@ def test_caching():
     )
     
 import fire
-# usage: python gemini_chain.py test_apply2
+# usage: python gemini_msg_chain.py test_apply2
 if __name__ == "__main__":
     fire.Fire()
