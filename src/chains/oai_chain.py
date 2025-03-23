@@ -1,10 +1,11 @@
 from dataclasses import dataclass, field, replace
-from typing import List, Dict, Union, Any, Optional, Tuple
+from typing import List, Dict, Union, Any, Optional, Tuple, Type
 from openai import OpenAI
 from functools import wraps
 import os
 # import persistence
 import tenacity
+from pydantic import BaseModel
 
 
 from src.utils import calc_cost
@@ -19,19 +20,20 @@ def chain_method(func):
 
 @dataclass(frozen=True)
 class Message:
-    content: List[Dict[str, str]]
+    content: Union[str, List[Dict[str, str]]]
     role: str
     should_cache: bool = False
 
 @dataclass(frozen=True)
 class OpenAIMessageChain:
-    model_name: str = "gpt-4"
+    model_name: str = "gpt-4o"
     messages: Tuple[Message] = field(default_factory=tuple)
     system_prompt: Any = None  # Changed from anthropic.NOT_GIVEN
     cache_system: bool = False
     metric_list: List[Dict[str, Any]] = field(default_factory=tuple)
-    response_list: List[str] = field(default_factory=tuple)
+    response_list: List[Any] = field(default_factory=tuple)
     verbose: bool = False
+    response_format: Optional[Any] = None
     
     @chain_method
     def quiet(self):
@@ -44,22 +46,28 @@ class OpenAIMessageChain:
         return self
     
     @chain_method
-    def add_message(self, content: str, role: str, should_cache: bool = False):
+    def add_message(self, content: Union[str, List[Dict[str, str]]], role: str, should_cache: bool = False):
         assert not should_cache, "OpenAI does not support caching"
         msg = Message(role=role, content=content, should_cache=should_cache)
         return replace(self, messages=self.messages + (msg,))
 
     @chain_method
-    def user(self, content: str, should_cache: bool = False):
+    def user(self, content: Union[str, List[Dict[str, str]]], should_cache: bool = False):
         return self.add_message(content=content, role="user", should_cache=should_cache)
 
     @chain_method
-    def bot(self, content: str, should_cache: bool = False):
+    def bot(self, content: Union[str, List[Dict[str, str]]], should_cache: bool = False):
         return self.add_message(content=content, role="assistant", should_cache=should_cache)
     
     @chain_method
     def system(self, content: str, should_cache: bool = False):
         self = replace(self, system_prompt=content, cache_system=should_cache)
+        return self
+    
+    @chain_method
+    def with_structure(self, response_format: Type[BaseModel]):
+        """Set a Pydantic model as the expected response format."""
+        self = replace(self, response_format=response_format)
         return self
 
     def serialize(self) -> list:
@@ -87,14 +95,26 @@ class OpenAIMessageChain:
         client = OpenAI()
         msgs = self.serialize()
         
-        response = client.chat.completions.create(
-            model=self.model_name,  # or your preferred model
-            messages=msgs,
-            max_tokens=4096,
-            temperature=1.0
-        )
+        if self.response_format:
+            # Use structured output with parse
+            response = client.beta.chat.completions.parse(
+                model=self.model_name,
+                messages=msgs,
+                response_format=self.response_format,
+                max_tokens=4096,
+                temperature=1.0
+            )
+            resp = response.choices[0].message.parsed
+        else:
+            # Regular text generation
+            response = client.chat.completions.create(
+                model=self.model_name,
+                messages=msgs,
+                max_tokens=4096,
+                temperature=1.0
+            )
+            resp = response.choices[0].message.content
         
-        resp = response.choices[0].message.content
         self = replace(self, 
                       metric_list=self.metric_list + (self.parse_metrics(response),),
                       response_list=self.response_list + (resp,)
@@ -263,5 +283,28 @@ def test_apply2():
     
     print(resp_list)
     # .bot("Hi there!")
+    
+def test_structured_output():
+    from pydantic import BaseModel
+    
+    class CalendarEvent(BaseModel):
+        name: str
+        date: str
+        participants: list[str]
+        
+    chain = OpenAIMessageChain(model_name="gpt-4o-2024-08-06")
+    chain = (
+        chain
+        .system("Extract the event information.")
+        .user("Alice and Bob are going to a science fair on Friday.")
+        .with_structure(CalendarEvent)
+        .generate()
+        .print_last()
+    )
+    
+    event = chain.last_response
+    print(f"Event name: {event.name}")
+    print(f"Event date: {event.date}")
+    print(f"Participants: {', '.join(event.participants)}")
     
 
