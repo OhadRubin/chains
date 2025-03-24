@@ -36,6 +36,89 @@ class AttributeList(BaseModel):
         return sorted(self.attributes, key=lambda x: x.importance_rank)
 
 
+def combin_attr(chain):
+    attributes = AttributeList(
+        attributes=list(chain.response_list[-2].sorted_att())
+        + chain.response_list[-1].attributes
+    )
+    return {"attributes_str": attributes.att_into_str(should_shuffle=True)}
+
+def bla(chain):
+    return (
+        chain.gen_prompt(
+        "Please re-rank the following attributes that define the quality of a \"{target_goal}\".\n"
+        "{ATT_DESC}\n"
+        "The attributes are:\n"
+        "{attribute_str}"
+    ).post_last(attribute_str=lambda x: x.att_into_str(top_n=5, should_shuffle=True)).gen_prompt(
+        "Please suggest additional 5 attributes that define the quality of a \"{target_goal}\".\n"
+        "{ATT_DESC}\n"
+        "Do not suggest attributes that are already in the list.\n"
+        "The attributes are:\n"
+        "{attribute_str}"
+    ).post_chain(combin_attr).gen_prompt(
+        "Please re-rank the following attributes that define the quality of a \"{target_goal}\".\n"
+        "{ATT_DESC}\n"
+        "The attributes are:\n"
+        "{attribute_str}"
+    ).post_last(
+        attribute_str=lambda x: x.att_into_str(top_n=10, should_shuffle=True)
+    ).gen_prompt(
+        "Please merge the following attributes such that they are non-overlapping.\n"
+        "You should only merge attributes that are similar. Do not try and coerce two unrelated attributes into one.\n"
+        "Do: Testability and Verifiability.\n"
+        "Don't: Testability and Completeness.\n"
+        "Don't: Clarity and Precision.\n"
+        "The attributes define the quality of a \"{target_goal}\".\n"
+        "{ATT_DESC}\n"
+        "The attributes are:\n"
+        "{attribute_str}"
+    )
+    .post_last(attribute_str=lambda x: x.att_into_str(should_shuffle=False))
+    .gen_prompt(
+        "Please suggest 10 additional attributes that define the quality of a \"{target_goal}\".\n"
+        "{ATT_DESC}\n"
+        "The current attributes I have are:\n"
+        "{attribute_str}"
+    ).post_chain(combin_attr)
+    .gen_prompt(
+        "Please re-rank the following attributes that define the quality of a \"{target_goal}\".\n"
+        "{ATT_DESC}\n"
+        "The attributes are:\n"
+        "{attributes_str}"
+    )
+    .post_last(
+        attribute_str=lambda x: x.att_into_str(should_shuffle=True, top_n=10)
+    )
+    .gen_prompt(
+        "Please merge the following attributes such that they are non-overlapping.\n"
+        "You should only merge attributes that are similar. Do not try and coerce two unrelated attributes into one.\n"
+        "Do: Testability and Verifiability.\n"
+        "Don't: Testability and Completeness.\n"
+        "Don't: Clarity and Precision.\n"
+        "The attributes define the quality of a \"{target_goal}\".\n"
+        "{ATT_DESC}\n"
+        "The attributes are:\n"
+        "{attributes_str}"
+)
+    )
+
+
+ATT_DESC = "For example: Clarity, Completeness, Correctness etc.\nYou should rank the most important attributes higher (i.e a lower number)."
+
+def generate_attributes(chain):
+    return (
+        chain.prompt(
+        "What would you say are the attributes of a \"{target_goal}\" from a quality perspective?\n"
+        "{ATT_DESC}\n"
+        "Give {n_attributes} such attributes.\n",
+        )
+        .with_structure(AttributeList)
+        .post_last(attribute_str=lambda x: x.att_into_str(should_shuffle=True))
+        .generate()
+        )
+
+
 class QualityAttribute(BaseModel):
     name: str = Field(..., description="Name of the quality attribute")
     completion_percentage: int = Field(
@@ -81,6 +164,54 @@ class DevModel(BaseModel):
         return "\n".join(result)
 
 
+# Constants and templates
+GOAL_POWER_LAW = """# Generalized Goal Achievement Power-Law
+
+Progressing through successive stages of any complex goal typically involves increasingly difficult, resource-intensive, and risky transitions. These incremental difficulties often follow a **power-law distribution**, meaning that each subsequent step toward higher completion levels generally requires exponentially greater investments in terms of effort, time, and resources.
+This relationship is widely observed across various domains:
+- **Initial conception (0-10%)**: Brainstorming, ideation, and basic planning require minimal resources, primarily intellectual effort and time for conceptualization.
+- **Foundation building (11-25%)**: Establishing fundamental structures, gathering essential resources, and creating basic frameworks demand modest but increased investment.
+- **Early development (26-40%)**: Building core components, demonstrating basic functionality, and validating initial assumptions require noticeable increases in resource allocation.
+- **Mid-stage development (41-60%)**: Integration of components, resolving technical challenges, and validating the approach substantially escalate complexity and resource requirements.
+- **Advanced development (61-75%)**: System optimization, addressing edge cases, and preparing for completion significantly increase demands on expertise and resources.
+- **Refinement (76-90%)**: Polishing, extensive testing, and ensuring reliability often require disproportionately large investments compared to earlier stages.
+- **Final completion (91-100%)**: Achieving the highest levels of performance, reliability, and readiness typically demands the most intensive resource allocation, frequently exhibiting exponential growth in costs and efforts.
+
+Goal progression tends to follow a **power-law pattern** across these stages, with each step significantly costlier and more challenging than the previous, regardless of the specific domain."""
+
+
+def generate_stages(chain):
+    return (
+        chain.post_last(attribute_str=lambda x: x.att_into_str())
+        .prompt(
+        "We are interested in defining the different stages of developing a \"{target_goal}\" using the given quality attributes.\n"
+        "\n"
+        "```\n"
+        "{GOAL_POWER_LAW}\n"
+        "```\n"
+        "\n"
+        "These are the attributes of an \"{target_goal}\" from a quality perspective:\n"
+        "{attributes_str}\n"
+        "\n"
+        "Suggest {n_stages} stages for developing a \"{target_goal}\". It should be represented by the following schema and it should use the above attributes of a \"{target_goal}\" from a quality perspective.\n"
+        "It should also incorporate the following facts:\n"
+        "1. Attributes that not as important should be not be advance at all in the starting stages, and should be done mostly at later stages.\n"
+        "2. Progress should follow a power-law pattern.\n"
+        "3. Progress is not required to be monotonic,\n"
+        "4. It makes sense for most attributes not to increase at all in some stages.\n"
+        "5. The least important attributes should only be advanced at the later stages.\n"
+        "\n"
+        "\n"
+        "i.e we might be increase some attribute A at a previous stage, but at this stage it was decreased, and some attribute B was increased.\n"
+        "\n"
+        "Refrain from adjactives as much as possible."
+    )
+    .with_structure(DevModel)
+    .generate()
+    .post_last(stages_str=lambda x: x.as_str())
+    )
+
+
 class DevelopmentStageText(BaseModel):
     name: str = Field(..., description="Name of the development stage")
     description: str = Field(..., description="Description of the stage")
@@ -92,230 +223,118 @@ class DevelopmentStageText(BaseModel):
 
 class DevModelText(BaseModel):
     stages: List[DevelopmentStageText]
+    
+
+    def as_str(self) -> str:
+        """Convert the development stages to a string representation."""
+        result = []
+        for i, stage in enumerate(self.stages):
+            result.append(f"Stage {i+1}: {stage.name}: {stage.description}. {stage.state_change}")
+        return "\n".join(result)
 
 
-# Constants and templates
-GOAL_POWER_LAW = """# Generalized Goal Achievement Power-Law
-
-Progressing through successive stages of any complex goal typically involves increasingly difficult, resource-intensive, and risky transitions. These incremental difficulties often follow a **power-law distribution**, meaning that each subsequent step toward higher completion levels generally requires exponentially greater investments in terms of effort, time, and resources.
-
-This relationship is widely observed across various domains:
-
-- **Initial conception (0-10%)**: Brainstorming, ideation, and basic planning require minimal resources, primarily intellectual effort and time for conceptualization.
-
-- **Foundation building (11-25%)**: Establishing fundamental structures, gathering essential resources, and creating basic frameworks demand modest but increased investment.
-
-- **Early development (26-40%)**: Building core components, demonstrating basic functionality, and validating initial assumptions require noticeable increases in resource allocation.
-
-- **Mid-stage development (41-60%)**: Integration of components, resolving technical challenges, and validating the approach substantially escalate complexity and resource requirements.
-
-- **Advanced development (61-75%)**: System optimization, addressing edge cases, and preparing for completion significantly increase demands on expertise and resources.
-
-- **Refinement (76-90%)**: Polishing, extensive testing, and ensuring reliability often require disproportionately large investments compared to earlier stages.
-
-- **Final completion (91-100%)**: Achieving the highest levels of performance, reliability, and readiness typically demands the most intensive resource allocation, frequently exhibiting exponential growth in costs and efforts.
-
-Goal progression tends to follow a **power-law pattern** across these stages, with each step significantly costlier and more challenging than the previous, regardless of the specific domain."""
-
-ATT_DESC = "For example: Clarity, Completeness, Correctness etc.\nYou should rank the most important attributes higher (i.e a lower number)."
-
-
-def combin_attr(chain):
-    attributes = AttributeList(
-        attributes=list(chain.response_list[-2].sorted_att())
-        + chain.response_list[-1].attributes
-    )
-    return {"attributes_str": attributes.att_into_str(should_shuffle=True)}
+def verbelize_stages(chain):
+    return chain.prompt(
+        "We are interested in defining the different stages of developing a \"{target_goal}\" with an emphesis on how quality w.r.t specific attributes evolves.\n"
+        "Meaning, at a specific stage of development, we can focus on a specific attribute A, and at another we can focus on another attribute B.\n"
+        "You will be given a list of attributes that determine the quality of a \"{target_goal}\", and a list of stages that changed from the previous stage and measure the quality of the \"{target_goal}\" with respect to the attributes.\n"
+        "\n"
+        "Your task is to describe the changes from each stage to the next in words in such a way that it is clear to somewhere what he should focus on in each stage.\n"
+        "Your description should be in words and not in numbers and describe what should a person focus on during each stage.\n"
+        "For example, in early stages, development might prioritize certain attributes, while later stages could shift focus to different attributes as the project matures.\n"
+        "You should describe it according to how the attribute changes from the previous stage.\n"
+        "It should also be clear what is the goal of the stage.\n"
+        "\n"
+        "List of attributes:\n"
+        "<attributes>\n"
+        "{attributes_str}\n"
+        "</attributes>\n"
+        "\n"
+        "List of stages:\n"
+        "<stages>\n"
+        "{stages_str}\n"
+        "</stages>\n"
+        "\n"
+        "\n"
+        "Your task is to describe the changes from each stage to the next in words in such a way that it is clear to somewhere what he should focus on in each stage.\n"
+        "Your description should be in words and not in numbers and describe what should a person focus on during each stage.\n"
+        "For example, in early stages, development might prioritize certain attributes, while later stages could shift focus to different attributes as the project matures.\n"
+        "You should describe it according to how the attribute changes from the previous stage.\n"
+        "It should also be clear what is the goal of the stage.\n"
+        "Refrain from adjactives as much as possible."
+    ).with_structure(DevModelText).generate().post_last(stages_text_str=lambda x: x.as_str())
 
 
-# Set the target goal to analyze
+class OutOfScopeActivity(BaseModel):
+    name: str = Field(..., description="Name of the activity")
+    description: str = Field(..., description="Description of the activity")
 
+class OutOfScopeStage(BaseModel):
+    name: str = Field(..., description="Name of the stage")
+    description: str = Field(..., description="Description of the stage")
+    out_of_scope: List[OutOfScopeActivity] = Field(..., description="List of activities that are out of scope for the stage")
+    
+    
+    def as_str(self) -> str:
+        """Convert the development stages to a string representation."""
+        result = f"Stage {self.name}: {self.description}.\nOut of scope activities:\n"
+        for i, activity in enumerate(self.out_of_scope):
+            result += f"  - {activity.name}: {activity.description}\n"
+        return result
 
-def generate_attributes(target_goal: str):
-    chain = (
-    PromptChain().prompt(
-        """What would you say are the attributes of a "{target_goal}" from a quality perspective? 
-{ATT_DESC}
-Give 30 such attributes.""",
-        ).set_prev_fields({"target_goal": target_goal, "ATT_DESC": ATT_DESC})
-        .set_model(lambda: MessageChain.get_chain(model="instructor"))
-        .with_structure(AttributeList)
-        .generate()
-        .post_last(attribute_str=lambda x: x.att_into_str(should_shuffle=True))
-        .gen_prompt(
-        """Please re-rank the following attributes that define the quality of a "{target_goal}".
-{ATT_DESC}
-The attributes are:
-{attribute_str}"""
+class OutOfScopeModel(BaseModel):
+    stages: List[OutOfScopeStage]
+
+    def as_str(self) -> str:
+        """Convert the development stages to a string representation."""
+        result = []
+        for i, stage in enumerate(self.stages):
+            result.append(stage.as_str())
+        return "\n\n".join(result)
+
+def find_out_of_scope_stages(chain):
+    return (
+        chain.prompt(
+            'We are interested in defining the different stages of developing a "{target_goal}". As of now, we have a basic plan.\n'
+            "Your goal is the following: for every stage of our plan, you are to determine {n_out_of_scope} activities that would be considered to be out of scope for that stage.\n"
+            "These are the stages of our plan:\n\n{stages_text_str}"
         )
-        .post_last(attribute_str=lambda x: x.att_into_str(top_n=5, should_shuffle=True))
-        .gen_prompt(
-        """Please suggest additional 5 attributes that define the quality of a "{target_goal}".
-{ATT_DESC}
-Do not suggest attributes that are already in the list.
-The attributes are:
-{attribute_str}"""
-        )
-        .post_chain(combin_attr)
-        .gen_prompt(
-        """Please re-rank the following attributes that define the quality of a "{target_goal}".
-{ATT_DESC}
-The attributes are:
-{attribute_str}"""
-        )
-        .post_last(attribute_str=lambda x: x.att_into_str(top_n=10, should_shuffle=True))
-        .gen_prompt(
-        """Please merge the following attributes such that they are non-overlapping.
-You should only merge attributes that are similar. Do not try and coerce two unrelated attributes into one.
-Do: Testability and Verifiability.
-Don't: Testability and Completeness.
-Don't: Clarity and Precision.
-The attributes define the quality of a "{target_goal}".
-{ATT_DESC}
-The attributes are:
-{attribute_str}
-"""
-        )
-        .post_last(attribute_str=lambda x: x.att_into_str(should_shuffle=False))
-        .gen_prompt(
-        """Please suggest 10 additional attributes that define the quality of a "{target_goal}".
-{ATT_DESC}
-The current attributes I have are:
-{attribute_str}"""
-        )
-        .post_chain(combin_attr)
-        .gen_prompt(
-        """Please re-rank the following attributes that define the quality of a "{target_goal}".
-{ATT_DESC}
-The attributes are:
-{attributes_str}"""
-        )
-        .post_last(attribute_str=lambda x: x.att_into_str(should_shuffle=True, top_n=10))
-        .gen_prompt(
-        """Please merge the following attributes such that they are non-overlapping. 
-You should only merge attributes that are similar. Do not try and coerce two unrelated attributes into one.
-Do: Testability and Verifiability.
-Don't: Testability and Completeness.
-Don't: Clarity and Precision.
-The attributes define the quality of a "{target_goal}".
-{ATT_DESC}
-The attributes are:
-{attributes_str}"""
-        )
+        .with_structure(OutOfScopeModel)
         .generate()
     )
-    return chain.response_list[-1]
 
-
-
-
-def get_development_stages(target_goal, attributes):
-
+def generate(target_goal: str, n_attributes: int = 30, n_stages: int = 7, n_out_of_scope: int = 5):
     chain = (
         PromptChain()
-        .prompt(
-            """We are interested in defining the different stages of developing a "{target_goal}" using the given quality attributes.
-
-```
-{GOAL_POWER_LAW}
-```
-
-These are the attributes of an "{target_goal}" from a quality perspective:
-{attributes_str}
-
-Suggest 10 stages for developing a "{target_goal}". It should be represented by the following schema and it should use the above attributes of a "{target_goal}" from a quality perspective.
-It should also incorporate the following facts:
-1. Attributes that not as important should be not be advance at all in the starting stages, and should be done mostly at later stages.
-2. Progress should follow a power-law pattern.
-3. Progress is not required to be monotonic,
-4. It makes sense for most attributes not to increase at all in some stages.
-5. The least important attributes should only be advanced at the later stages.
-
-
-i.e we might be increase some attribute A at a previous stage, but at this stage it was decreased, and some attribute B was increased.
-
-Refrain from adjactives as much as possible."""
-        )
-        .set_prev_fields({"target_goal": target_goal, 
-                          "attributes_str": attributes.att_into_str(should_shuffle=False),
-                          "GOAL_POWER_LAW": GOAL_POWER_LAW})
-        .set_model(lambda: MessageChain.get_chain(model="instructor"))
-        .with_structure(DevModel)
-        .generate()
-    )
-
-    return chain.response_list[-1]
-
-
-
-
-def get_development_text(target_goal, attributes, dev_model):
-    attributes_str = attributes.att_into_str(should_shuffle=False)
-    stages_str = dev_model.as_str()
-
-    chain = (
-        PromptChain()
-        .prompt("""We are interested in defining the different stages of developing a "{target_goal}" with an emphesis on how quality w.r.t specific attributes evolves.
-Meaning, at a specific stage of development, we can focus on a specific attribute A, and at another we can focus on another attribute B.
-You will be given a list of attributes that determine the quality of a "{target_goal}", and a list of stages that changed from the previous stage and measure the quality of the "{target_goal}" with respect to the attributes.
-
-Your task is to describe the changes from each stage to the next in words in such a way that it is clear to somewhere what he should focus on in each stage.
-Your description should be in words and not in numbers and describe what should a person focus on during each stage.
-For example, in early stages, development might prioritize certain attributes, while later stages could shift focus to different attributes as the project matures.
-You should describe it according to how the attribute changes from the previous stage.
-It should also be clear what is the goal of the stage.
-
-List of attributes:
-<attributes>
-{attributes_str}
-</attributes>
-
-List of stages:
-<stages>
-{stages_str}
-</stages>
-
-
-Your task is to describe the changes from each stage to the next in words in such a way that it is clear to somewhere what he should focus on in each stage.
-Your description should be in words and not in numbers and describe what should a person focus on during each stage.
-For example, in early stages, development might prioritize certain attributes, while later stages could shift focus to different attributes as the project matures.
-You should describe it according to how the attribute changes from the previous stage.
-It should also be clear what is the goal of the stage.
-Refrain from adjactives as much as possible.""")
         .set_prev_fields(
             {
                 "target_goal": target_goal,
-                "attributes_str": attributes_str,
-                "stages_str": stages_str,
+                "ATT_DESC": ATT_DESC,
+                "GOAL_POWER_LAW": GOAL_POWER_LAW,
+                "n_attributes": str(n_attributes),
+                "n_stages": str(n_stages),
+                "n_out_of_scope": str(n_out_of_scope),
             }
         )
         .set_model(lambda: MessageChain.get_chain(model="instructor"))
-        .with_structure(DevModelText)
-        .generate()
     )
+    for f in [generate_attributes, generate_stages, verbelize_stages, find_out_of_scope_stages]:
+        chain = f(chain)
 
     return chain.response_list[-1]
 
 
 def generate_development_roadmap(target_goal):
     # Step 1: Generate attributes
-    attributes = generate_attributes(target_goal)
-    print(f"Generated attributes for: {target_goal}")
-
-    # Step 2: Generate development stages
-    dev_model = get_development_stages(target_goal, attributes)
-    print(f"Generated development stages for: {target_goal}")
-
-    # Step 3: Generate text descriptions
-    dev_text = get_development_text(target_goal, attributes, dev_model)
+    dev_text = generate(target_goal, n_attributes=10)
     print(f"Generated development text for: {target_goal}")
 
-    # Print results
-    for i, stage in enumerate(dev_text.stages):
-        print(f"Stage: {stage.name}")
-        print(f"Description: {stage.description}")
-        print(f"State Change: {stage.state_change}")
-        print("-" * 50)
+    if isinstance(dev_text, OutOfScopeModel):
+        print(dev_text.as_str())
+    elif isinstance(dev_text, DevModelText):
+        print(dev_text.as_str())
+    else:
+        print(dev_text)
 
     return dev_text
 

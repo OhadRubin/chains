@@ -32,7 +32,6 @@ class Prompt:
     response_format: Optional[Type[BaseModel]] = None
     pre_tuple: Tuple[Callable] = field(default_factory=tuple)
     post_tuple: Tuple[Callable] = field(default_factory=tuple)
-    msg_chain_func: Optional[Callable] = None
 
 
 @dataclass(frozen=True)
@@ -41,25 +40,24 @@ class PromptChain:
     prev_prompts: Tuple[Prompt] = field(default_factory=tuple)
     response_list: Tuple[Any] = field(default_factory=tuple)
     prev_fields: Dict[str, Any] = field(default_factory=dict)
-
-
+    msg_chain_func: Optional[Callable] = None
 
     @chain_method
     def prompt(self, template: str):
-        msg_chain_func = None
+        # msg_chain_func = None
         response_format = None
         if self.curr_prompt is not None:
             if self.curr_prompt.response_format is not None:
                 response_format = self.curr_prompt.response_format
-            if self.curr_prompt.msg_chain_func is not None:
-                msg_chain_func = self.curr_prompt.msg_chain_func
+            # if self.curr_prompt.msg_chain_func is not None:
+            # msg_chain_func = self.curr_prompt.msg_chain_func
         prompt = Prompt(
             template=template,
             response_format=response_format,
-            msg_chain_func=msg_chain_func,
+            # msg_chain_func=msg_chain_func,
         )
         return replace(self, curr_prompt=prompt)
-    
+
     def set_prev_fields(self, prev_fields: Dict[str, Any]):
         return replace(self, prev_fields=prev_fields)
 
@@ -72,8 +70,7 @@ class PromptChain:
     @chain_method
     def set_model(self, func: Callable):
         # Store the function that creates the message chain
-        curr_prompt = replace(self.curr_prompt, msg_chain_func=func)
-        return replace(self, curr_prompt=curr_prompt)
+        return replace(self, msg_chain_func=func)
 
     @chain_method
     def post_last(self, **named_transformations):
@@ -100,8 +97,8 @@ class PromptChain:
     @chain_method
     def generate(self):
         # Use the message chain function if provided, otherwise create a default one
-        if self.curr_prompt.msg_chain_func is not None:
-            chain = self.curr_prompt.msg_chain_func()
+        if self.msg_chain_func is not None:
+            chain = self.msg_chain_func()
         else:
             # Use MessageChain from the chains library with default model
             chain = MessageChain.get_chain(model="gpt-4o")
