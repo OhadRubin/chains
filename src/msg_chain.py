@@ -4,8 +4,11 @@
 
 class MessageChain:
     @staticmethod
-    def get_chain( model: str, **kwargs):
-        if "claude" in model:
+    def get_chain(model: str, **kwargs):
+        if model.startswith("instructor"):
+            from src.msg_chains.instructor_msg_chain import InstructorMessageChain
+            return InstructorMessageChain(**kwargs)
+        elif "claude" in model:
             from src.msg_chains.claude_msg_chain import ClaudeMessageChain
             return ClaudeMessageChain(**kwargs)
         elif "gemini" in model:
