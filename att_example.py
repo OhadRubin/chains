@@ -390,11 +390,13 @@ def go_generate_attributes():
 
 import fire
 
-def main(target_goal="benchmark for LLM agents"):
+
+def main(target_goal="programming exercise specification in C++"):
     print(f"Generating development roadmap for: {target_goal}")
     dev_text = generate_development_roadmap(target_goal)
     print("Development roadmap generation complete.")
     return dev_text
+
 
 if __name__ == "__main__":
     fire.Fire(main)
