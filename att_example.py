@@ -273,11 +273,13 @@ class OutOfScopeStage(BaseModel):
     name: str = Field(..., description="Name of the stage")
     description: str = Field(..., description="Description of the stage")
     out_of_scope: List[OutOfScopeActivity] = Field(..., description="List of activities that are out of scope for the stage")
-    
-    
-    def as_str(self) -> str:
+
+    def as_str(self, add_description: bool = True) -> str:
         """Convert the development stages to a string representation."""
-        result = f"Stage {self.name}: {self.description}.\nOut of scope activities:\n"
+        if add_description:
+            result = f"Stage {self.name}: {self.description}.\nOut of scope activities:\n"
+        else:
+            result = f"Stage {self.name}:\nOut of scope activities:\n"
         for i, activity in enumerate(self.out_of_scope):
             result += f"  - {activity.name}: {activity.description}\n"
         return result
@@ -285,12 +287,13 @@ class OutOfScopeStage(BaseModel):
 class OutOfScopeModel(BaseModel):
     stages: List[OutOfScopeStage]
 
-    def as_str(self) -> str:
+    def as_str(self, add_description: bool = True) -> str:
         """Convert the development stages to a string representation."""
         result = []
         for i, stage in enumerate(self.stages):
-            result.append(stage.as_str())
+            result.append(stage.as_str(add_description=add_description))
         return "\n\n".join(result)
+
 
 def find_out_of_scope_stages(chain):
     return (
@@ -301,7 +304,37 @@ def find_out_of_scope_stages(chain):
         )
         .with_structure(OutOfScopeModel)
         .generate()
+        .post_last(out_of_scope_str=lambda x: x.as_str(add_description=False))
     )
+
+
+class PlanStageText(BaseModel):
+    name: str = Field(..., description="Name of the development stage")
+    detailed_description: str = Field(..., description="Detailed description of the stage")
+
+
+class PlanModel(BaseModel):
+    stages: List[PlanStageText]
+
+    def as_str(self) -> str:
+        """Convert the development stages to a string representation."""
+        result = []
+        for i, stage in enumerate(self.stages):
+            result.append(f"Stage {i+1}: {stage.name}:\n{stage.detailed_description}")
+        return "\n".join(result)
+
+
+def create_plan(chain):
+    return (
+        chain.prompt(
+            'We are interested in fleshing out our plan for developing a "{target_goal}".\n'
+            "These are the stages of our plan, along with out of scope activities for each stage:\n\n{out_of_scope_str}"
+        )
+        .with_structure(PlanModel)
+        .generate()
+        .post_last(plan_str=lambda x: x.as_str())
+    )
+
 
 def generate(target_goal: str, n_attributes: int = 30, n_stages: int = 7, n_out_of_scope: int = 5):
     chain = (
@@ -318,7 +351,7 @@ def generate(target_goal: str, n_attributes: int = 30, n_stages: int = 7, n_out_
         )
         .set_model(lambda: MessageChain.get_chain(model="instructor"))
     )
-    for f in [generate_attributes, generate_stages, verbelize_stages, find_out_of_scope_stages]:
+    for f in [generate_attributes, generate_stages, verbelize_stages, find_out_of_scope_stages, create_plan]:
         chain = f(chain)
 
     return chain.response_list[-1]
@@ -328,8 +361,9 @@ def generate_development_roadmap(target_goal):
     # Step 1: Generate attributes
     dev_text = generate(target_goal, n_attributes=10)
     print(f"Generated development text for: {target_goal}")
-
-    if isinstance(dev_text, OutOfScopeModel):
+    if isinstance(dev_text, PlanModel):
+        print(dev_text.as_str())
+    elif isinstance(dev_text, OutOfScopeModel):
         print(dev_text.as_str())
     elif isinstance(dev_text, DevModelText):
         print(dev_text.as_str())

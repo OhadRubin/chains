@@ -117,7 +117,8 @@ class PromptChain:
             chain = chain.with_structure(self.curr_prompt.response_format)
 
         # Generate response
-        chain = chain.generate().print_last()
+        chain = chain.generate()
+        print("Step")
         # Get the output from the chain
         output = chain.last_response
         # Add the response to the response_list
