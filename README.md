@@ -11,7 +11,7 @@ pip install anthropic "google-generativeai>=0.3.0" openai tenacity appdirs
 ## Quick Start
 
 ```python
-from src.chain import MessageChain
+from chains.chain import MessageChain
 
 # Create a chain for your preferred model
 chain = MessageChain.get_chain(model="claude-3-5-sonnet")
