@@ -5,7 +5,7 @@ from functools import wraps
 import os
 import sys
 
-from src.msg_chain import MessageChain
+from chains.msg_chain import MessageChain
 from pydantic import BaseModel
 import re
 

@@ -8,7 +8,7 @@ from typing import List, Dict, Union, Any, Optional, Tuple, Type
 from openai import OpenAI
 from pydantic import BaseModel
 
-from src.utils import calc_cost
+from chains.utils import calc_cost
 
 # python -m src.msg_chains.claude_msg_chain
 def chain_method(func):

@@ -4,21 +4,17 @@ from openai import OpenAI
 from functools import wraps
 import os
 from pydantic import BaseModel
-import anthropic
 
-from src.utils import calc_cost
 
-import instructor
+from chains.utils import calc_cost
+
 
 def chain_method(func):
     """Decorator to convert a function into a chainable method."""
-
     @wraps(func)
     def wrapper(self, *args, **kwargs):
         return func(self, *args, **kwargs)
-
     return wrapper
-
 
 @dataclass(frozen=True)
 class Message:
@@ -26,17 +22,18 @@ class Message:
     role: str
     should_cache: bool = False
 
-
 @dataclass(frozen=True)
-class InstructorMessageChain:
-    model_name: str = "anthropic.claude-3-5-sonnet-20241022-v2:0"
+class OpenAIMessageChain:
+    model_name: str = "gpt-4o"
     messages: Tuple[Message] = field(default_factory=tuple)
-    system_prompt: Any = None  
+    system_prompt: Any = None  # Changed from anthropic.NOT_GIVEN
     cache_system: bool = False
     metric_list: List[Dict[str, Any]] = field(default_factory=tuple)
     response_list: List[Any] = field(default_factory=tuple)
     verbose: bool = False
     response_format: Optional[Any] = None
+    base_url: Optional[str] = None
+    max_tokens: int = 4096
 
     @chain_method
     def quiet(self):
@@ -49,29 +46,18 @@ class InstructorMessageChain:
         return self
 
     @chain_method
-    def add_message(
-        self,
-        content: Union[str, List[Dict[str, str]]],
-        role: str,
-        should_cache: bool = False,
-    ):
-        assert not should_cache, "Instructor does not support caching"
+    def add_message(self, content: Union[str, List[Dict[str, str]]], role: str, should_cache: bool = False):
+        assert not should_cache, "OpenAI does not support caching"
         msg = Message(role=role, content=content, should_cache=should_cache)
         return replace(self, messages=self.messages + (msg,))
 
     @chain_method
-    def user(
-        self, content: Union[str, List[Dict[str, str]]], should_cache: bool = False
-    ):
+    def user(self, content: Union[str, List[Dict[str, str]]], should_cache: bool = False):
         return self.add_message(content=content, role="user", should_cache=should_cache)
 
     @chain_method
-    def bot(
-        self, content: Union[str, List[Dict[str, str]]], should_cache: bool = False
-    ):
-        return self.add_message(
-            content=content, role="assistant", should_cache=should_cache
-        )
+    def bot(self, content: Union[str, List[Dict[str, str]]], should_cache: bool = False):
+        return self.add_message(content=content, role="assistant", should_cache=should_cache)
 
     @chain_method
     def system(self, content: str, should_cache: bool = False):
@@ -101,29 +87,41 @@ class InstructorMessageChain:
             output_tokens=resp.usage.completion_tokens,
             total_tokens=resp.usage.total_tokens,
             input_tokens_cache_read=0,  # OpenAI doesn't have cache metrics
-            input_tokens_cache_create=0,
+            input_tokens_cache_create=0
         )
 
     @chain_method
     def generate(self):
-        client = anthropic.AnthropicBedrock(
-            aws_region="us-west-2",
-        )
-        client = instructor.from_anthropic(client, mode=instructor.Mode.ANTHROPIC_TOOLS)
+        if self.base_url is not None:
+            client = OpenAI(base_url=self.base_url, api_key="lm-studio")
+        else:
+            client = OpenAI()
         msgs = self.serialize()
-        assert self.response_format
-        resp = client.messages.create(
-            model=self.model_name,
-            max_tokens=4096,
-            messages=msgs,
-            response_model=self.response_format,
-        )
 
-        self = replace(
-            self,
-            metric_list=(None,),
-            response_list=self.response_list + (resp,),
-        )
+        if self.response_format:
+            # Use structured output with parse
+            response = client.beta.chat.completions.parse(
+                model=self.model_name,
+                messages=msgs,
+                response_format=self.response_format,
+                max_tokens=self.max_tokens,
+                temperature=1.0
+            )
+            resp = response.choices[0].message.parsed
+        else:
+            # Regular text generation
+            response = client.chat.completions.create(
+                model=self.model_name,
+                messages=msgs,
+                max_tokens=self.max_tokens,
+                temperature=1.0
+            )
+            resp = response.choices[0].message.content
+
+        self = replace(self, 
+                      metric_list=self.metric_list + (self.parse_metrics(response),),
+                      response_list=self.response_list + (resp,)
+                      )
         return self
 
     # genrates and appends the last assistant message into the chain
@@ -145,12 +143,11 @@ class InstructorMessageChain:
                 metrics = self.last_metrics
             print(f"{response=}")
             print(f"{metrics=}")
-        if mode == "full_completion":
+        if mode=="full_completion":
             response = self.last_full_completion
             print(f"{response=}")
 
         return self
-
     @property
     def last_response(self):
         return self.response_list[-1]
@@ -183,64 +180,57 @@ class InstructorMessageChain:
 
 
 def test_chain1():
-    chain1 = InstructorMessageChain()
+    chain1 = OpenAIMessageChain()
     chain1 = (
-        chain1.user("Hello!")
+        chain1
+        .user("Hello!")
         .bot("Hi there!")
         .user("How are you?")
-        .generate()
-        .print_last()
+        .generate().print_last()
     )
 
 
 def test_chain2():
-    chain2 = InstructorMessageChain()
+    chain2 = OpenAIMessageChain()
     chain2 = (
-        chain2.user("Come up with a name, respond with a single word")
+        chain2
+        .user("Come up with a name, respond with a single word")
         .bot("Donny")
         .user("Tell me a story about Donny")
-        .generate()
-        .print_last()
+        .generate().print_last()
     )
-
 
 def test_system():
-    chain2 = InstructorMessageChain()
+    chain2 = OpenAIMessageChain()
     chain2 = (
-        chain2.system("Answer in rhyming words")
+        chain2
+        .system("Answer in rhyming words")
         .user("Come up with a name, respond with a single word")
         .bot("Donny")
         .user("Tell me a story about Donny")
-        .generate()
-        .print_last()
+        .generate().print_last()
     )
 
-
 def test_generate_bot():
-    chain = InstructorMessageChain()
+    chain = OpenAIMessageChain()
     chain = (
-        chain.system("Answer in rhyming words")
-        .user("Come up with a name, respond with a single word")
-        .bot("Donny")
-        .user("Tell me a story about Donny")
-        .generate_bot()
-        .user("Repeat your last message in lowercase")
-        .generate_bot()
+        chain
+        .system("Answer in rhyming words")
+        .user("Come up with a name, respond with a single word").bot("Donny")
+        .user("Tell me a story about Donny").generate_bot()
+        .user("Repeat your last message in lowercase").generate_bot()
         .print_last()
     )
 
 
 def test_generate_bot_prefix():
-    chain = InstructorMessageChain()
+    chain = OpenAIMessageChain()
     chain = (
-        chain.system("Answer in rhyming words")
+        chain
+        .system("Answer in rhyming words")
         .user("Come up with a name, respond with a single word")
-        .user("Tell me a story about Donny")
-        .bot("Our story is about Donny")
-        .generate_bot()
-        .print_last()
-        .user("Repeat your last message in lowercase")
-        .generate_bot()
+        .user("Tell me a story about Donny").bot("Our story is about Donny").generate_bot().print_last()
+        .user("Repeat your last message in lowercase").generate_bot()
         .print_last()
     )
     # prints
@@ -248,28 +238,23 @@ def test_generate_bot_prefix():
     # ....
     # response="our story is about donny\n\nwho wasn't at all bright or brainy,\nhe tripped on his feet,\nwhile crossing the street,\nand landed in puddles quite rainy!"
     # ...
-
 
 def test_apply_last():
-    chain = InstructorMessageChain()
+    chain = OpenAIMessageChain()
     chain = (
-        chain.system("Answer in rhyming words")
+        chain
+        .system("Answer in rhyming words")
         .user("Come up with a name, respond with a single word")
-        .user("Tell me a story about Donny")
-        .bot("Our story is about Donny")
-        .generate_bot()
-        .print_last(mode="full_completion")
-        .user("Repeat your last message in lowercase")
-        .generate_bot()
+        .user("Tell me a story about Donny").bot("Our story is about Donny").generate_bot().print_last(mode="full_completion")
+        .user("Repeat your last message in lowercase").generate_bot()
         .print_last()
+        
     )
     # prints
     # response=",\nWho wasn't at all bright or brainy,\nHe tripped on his feet,\nWhile crossing the street,\nAnd landed in puddles quite rainy!"
     # ....
     # response="our story is about donny\n\nwho wasn't at all bright or brainy,\nhe tripped on his feet,\nwhile crossing the street,\nand landed in puddles quite rainy!"
     # ...
-
-
 # test_apply_last()
 # test_generate_bot_prefix()
 
@@ -277,23 +262,28 @@ def test_apply_last():
 def test_apply1():
     def print_response(chain):
         print("Custom print:", chain.response_list[-1])
-
-    chain = InstructorMessageChain()
-    chain = chain.user("Hello").generate().apply(print_response)
-
-
+        
+    chain = OpenAIMessageChain()
+    chain = (
+        chain
+        .user("Hello")
+        .generate()
+        .apply(print_response)
+    )
 def test_apply2():
     resp_list = []
-
     def append_to(chain):
         resp_list.append(chain.response_list[-1])
-
-    chain = InstructorMessageChain()
-    chain = chain.user("Hello").generate().apply(append_to)
-
+    chain = OpenAIMessageChain()
+    chain = (
+        chain
+        .user("Hello")
+        .generate()
+        .apply(append_to)
+    )
+    
     print(resp_list)
     # .bot("Hi there!")
-
 
 def test_structured_output():
     from pydantic import BaseModel
@@ -303,9 +293,10 @@ def test_structured_output():
         date: str
         participants: list[str]
 
-    chain = InstructorMessageChain()
+    chain = OpenAIMessageChain(model_name="gpt-4o-2024-08-06")
     chain = (
-        chain.system("Extract the event information.")
+        chain
+        .system("Extract the event information.")
         .user("Alice and Bob are going to a science fair on Friday.")
         .with_structure(CalendarEvent)
         .generate()
@@ -316,6 +307,7 @@ def test_structured_output():
     print(f"Event name: {event.name}")
     print(f"Event date: {event.date}")
     print(f"Participants: {', '.join(event.participants)}")
+
 
 import fire
 
