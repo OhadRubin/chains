@@ -20,10 +20,13 @@ setup(
     python_requires=">=3.7",
     install_requires=[
         "anthropic",
+        "anthropic[bedrock]",
         "google-generativeai>=0.3.0",
         "openai",
         "tenacity",
         "appdirs",
         "pydantic",
+        "fire",
+        "instructor",
     ],
 ) 
