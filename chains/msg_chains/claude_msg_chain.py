@@ -103,13 +103,15 @@ class ClaudeMessageChain:
         # client = AnthropicBedrock(aws_region="us-west-2",)
 
         #
-        client = anthropic.AnthropicBedrock(aws_region="us-west-2",)
-        # client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY", None))
+        # client = anthropic.AnthropicBedrock(aws_region="us-west-2",)
+        client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY", None))
         # client = anthropic.Anthropic()
         msgs, system = self.serialize()
         message = client.messages.create(
-            # model="claude-3-5-sonnet-20241022",
-            model="anthropic.claude-3-5-sonnet-20241022-v2:0",
+            model="claude-3-5-sonnet-20241022",
+            
+            # model="anthropic.claude-3-5-sonnet-20241022-v2:0",
+            # model="claude-3-5-sonnet",
             max_tokens=8192,
             temperature=1.0,
             system=system,
