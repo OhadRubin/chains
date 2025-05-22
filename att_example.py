@@ -1,11 +1,9 @@
-import sys
-import os
+
 import random
-from typing import List, Optional
+from typing import List
 from pydantic import BaseModel, Field
-from dataclasses import dataclass
-from src.prompt_chain import PromptChain, Prompt
-from src.msg_chain import MessageChain
+from chains.prompt_chain import PromptChain
+from chains.msg_chain import MessageChain
 
 
 # Define models
@@ -351,7 +349,9 @@ def generate(target_goal: str, n_attributes: int = 30, n_stages: int = 7, n_out_
         )
         .set_model(lambda: MessageChain.get_chain(model="instructor"))
     )
-    for f in [generate_attributes, generate_stages, verbelize_stages, find_out_of_scope_stages, create_plan]:
+    for f in [generate_attributes, generate_stages
+            #   , verbelize_stages, find_out_of_scope_stages, create_plan
+              ]:
         chain = f(chain)
 
     return chain.response_list[-1]
