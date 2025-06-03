@@ -5,10 +5,106 @@ from openai import AsyncOpenAI
 from functools import wraps
 import inspect
 import os
+import base64
+import httpx
+import mimetypes
 from pydantic import BaseModel
 
 
 from chains.utils import calc_cost
+
+
+async def encode_base64_content_from_url(content_url: str) -> str:
+    """Asynchronously fetch content from a URL and encode it in base64."""
+
+    async with httpx.AsyncClient() as client:
+        response = await client.get(content_url)
+        response.raise_for_status()
+        result = base64.b64encode(response.content).decode("utf-8")
+
+    return result
+
+
+async def _resolve_multimodal_args(args: Dict[str, Any]) -> Dict[str, Any]:
+    """Convert any URL fields in tool arguments to base64-encoded strings."""
+
+    resolved = {}
+    for key, value in args.items():
+        if isinstance(value, list):
+            resolved[key] = [
+                (
+                    await encode_base64_content_from_url(v)
+                    if isinstance(v, str) and v.startswith("http")
+                    else v
+                )
+                for v in value
+            ]
+        elif isinstance(value, str) and value.startswith("http"):
+            resolved[key] = await encode_base64_content_from_url(value)
+        else:
+            resolved[key] = value
+    return resolved
+
+
+async def _encode_to_data_uri(source: str, mime_type: Optional[str] = None) -> str:
+    """Encode a local file or remote URL to a base64 data URI."""
+
+    if source.startswith("http"):
+        async with httpx.AsyncClient() as client:
+            response = await client.get(source)
+            response.raise_for_status()
+            content = response.content
+            if not mime_type:
+                mime_type = response.headers.get("content-type")
+    else:
+        with open(source, "rb") as f:
+            content = f.read()
+        if not mime_type:
+            mime_type = mimetypes.guess_type(source)[0]
+
+    mime_type = mime_type or "application/octet-stream"
+    encoded = base64.b64encode(content).decode("utf-8")
+    return f"data:{mime_type};base64,{encoded}"
+
+
+async def _resolve_multimodal_output(output: Any) -> Any:
+    """Convert MCP multimodal content to OpenAI message format."""
+
+    if isinstance(output, dict) and "content" in output:
+        # Handle MCP multimodal content structure
+        content_items = output["content"]
+
+        # If there's only text content, return just the text
+        text_items = [item for item in content_items if item.get("type") == "text"]
+        image_items = [item for item in content_items if item.get("type") == "image"]
+
+        if len(content_items) == 1 and content_items[0].get("type") == "text":
+            return content_items[0].get("text", "")
+
+        # For multimodal content, we'll return structured data that the chain can handle
+        result = []
+
+        for item in content_items:
+            if item.get("type") == "text" and item.get("text"):
+                result.append({"type": "text", "text": item["text"]})
+            elif item.get("type") == "image" and item.get("data"):
+                # Convert to OpenAI format
+                mime_type = item.get("mimeType", "image/png")
+                data_uri = f"data:{mime_type};base64,{item['data']}"
+                result.append({"type": "image_url", "image_url": {"url": data_uri}})
+
+        return {"multimodal_content": result}
+
+    elif isinstance(output, str):
+        if output.startswith("http") or os.path.exists(output):
+            return await _encode_to_data_uri(output)
+        return output
+    elif isinstance(output, list):
+        return [await _resolve_multimodal_output(v) for v in output]
+    elif isinstance(output, dict):
+        return {k: await _resolve_multimodal_output(v) for k, v in output.items()}
+    else:
+        return output
 
 
 def chain_method(func):
@@ -93,6 +189,54 @@ class OpenAIAsyncMessageChain:
     @chain_method
     def user(self, content: Union[str, List[Dict[str, str]]], should_cache: bool = False):
         return self.add_message(role="user", content=content, should_cache=should_cache)
+
+    @chain_method
+    def user_image_url(self, prompt: str, image_urls: List[str]):
+        """Send a user message with a text prompt and one or more image URLs."""
+        content = [{"type": "text", "text": prompt}] + [
+            {"type": "image_url", "image_url": {"url": url}} for url in image_urls
+        ]
+        return self.user(content)
+
+    @chain_method
+    async def user_image_base64(self, prompt: str, image_urls: List[str]):
+        """Send a user message with image content encoded in base64."""
+        encoded_images = [
+            await encode_base64_content_from_url(url) for url in image_urls
+        ]
+        content = [{"type": "text", "text": prompt}] + [
+            {
+                "type": "image_url",
+                "image_url": {"url": f"data:image/jpeg;base64,{img}"},
+            }
+            for img in encoded_images
+        ]
+        return self.user(content)
+
+    @chain_method
+    def user_audio_url(self, prompt: str, audio_urls: List[str]):
+        """Send a user message with a text prompt and one or more audio URLs."""
+        content = [{"type": "text", "text": prompt}] + [
+            {"type": "audio_url", "audio_url": {"url": url}} for url in audio_urls
+        ]
+        return self.user(content)
+
+    @chain_method
+    async def user_audio_base64(
+        self, prompt: str, audio_urls: List[str], mime_type: str = "audio/ogg"
+    ):
+        """Send a user message with audio content encoded in base64."""
+        encoded_audio = [
+            await encode_base64_content_from_url(url) for url in audio_urls
+        ]
+        content = [{"type": "text", "text": prompt}] + [
+            {
+                "type": "audio_url",
+                "audio_url": {"url": f"data:{mime_type};base64,{audio}"},
+            }
+            for audio in encoded_audio
+        ]
+        return self.user(content)
 
     @chain_method
     def bot(
@@ -235,25 +379,65 @@ class OpenAIAsyncMessageChain:
                     print(f"Tool call: {tool_call}")
                     tool_name = tool_call.function.name
                     tool_args = json.loads(tool_call.function.arguments)
+                    tool_args = await _resolve_multimodal_args(tool_args)
 
                     # Execute the tool function
                     if self.tools_mapping and tool_name in self.tools_mapping:
 
                         tool_response = await self.tools_mapping[tool_name](**tool_args)
-                        # Convert tool response to string for the API
-                        tool_response_str = (
-                            json.dumps(tool_response)
-                            if not isinstance(tool_response, str)
-                            else tool_response
-                        )
-                        print(f"Tool response: {tool_response_str}")
+                        tool_response = await _resolve_multimodal_output(tool_response)
 
-                        # Add tool result with proper tool_call_id and function name
-                        self = self.tool(
-                            content=tool_response_str,
-                            tool_call_id=tool_call.id,
-                            name=tool_name,
-                        )
+                        # Handle multimodal content specially
+                        if (
+                            isinstance(tool_response, dict)
+                            and "multimodal_content" in tool_response
+                        ):
+                            # Add multimodal content as a user message so the LLM can see images
+                            multimodal_content = tool_response["multimodal_content"]
+
+                            # Add tool result as text first
+                            text_parts = [
+                                item["text"]
+                                for item in multimodal_content
+                                if item.get("type") == "text"
+                            ]
+                            tool_text = (
+                                " ".join(text_parts)
+                                if text_parts
+                                else f"Tool {tool_name} executed successfully"
+                            )
+
+                            self = self.tool(
+                                content=tool_text,
+                                tool_call_id=tool_call.id,
+                                name=tool_name,
+                            )
+
+                            # Then add the multimodal content as a user message
+                            if any(
+                                item.get("type") == "image_url"
+                                for item in multimodal_content
+                            ):
+                                user_prompt = f"Here's the result from {tool_name}:"
+                                self = self.user(
+                                    [{"type": "text", "text": user_prompt}]
+                                    + multimodal_content
+                                )
+                        else:
+                            # Convert tool response to string for the API
+                            tool_response_str = (
+                                json.dumps(tool_response)
+                                if not isinstance(tool_response, str)
+                                else tool_response
+                            )
+                            print(f"Tool response: {tool_response_str}")
+
+                            # Add tool result with proper tool_call_id and function name
+                            self = self.tool(
+                                content=tool_response_str,
+                                tool_call_id=tool_call.id,
+                                name=tool_name,
+                            )
                     else:
                         # Handle case where tool is not found
                         error_msg = f"Tool '{tool_name}' not found in tools_mapping"

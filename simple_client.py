@@ -261,17 +261,26 @@ class ChatSession:
                         try:
                             result = await srv.execute_tool(tool_name, kwargs)
 
-                            # Handle CallToolResult properly
+                            # Handle CallToolResult properly - preserve multimodal content
                             if hasattr(result, "content"):
                                 if (
                                     isinstance(result.content, list)
                                     and len(result.content) > 0
                                 ):
-                                    content = result.content[0]
-                                    if hasattr(content, "text"):
-                                        return content.text
-                                    else:
-                                        return str(content)
+                                    # Return the full content list to preserve multimodal data
+                                    return {
+                                        "content": [
+                                            {
+                                                "type": getattr(item, "type", "text"),
+                                                "text": getattr(item, "text", None),
+                                                "data": getattr(item, "data", None),
+                                                "mimeType": getattr(
+                                                    item, "mimeType", None
+                                                ),
+                                            }
+                                            for item in result.content
+                                        ]
+                                    }
                                 else:
                                     return str(result.content)
                             else:
