@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field, replace
+import json
 from typing import List, Dict, Union, Any, Optional, Tuple, Type
 from openai import OpenAI
 from functools import wraps
@@ -16,11 +17,18 @@ def chain_method(func):
         return func(self, *args, **kwargs)
     return wrapper
 
+
 @dataclass(frozen=True)
 class Message:
-    content: Union[str, List[Dict[str, str]]]
     role: str
+    content: Optional[Union[str, List[Dict[str, str]]]] = None
+    tool_calls: Optional[List[Any]] = (
+        None  # Can store OpenAI's ToolCall objects or dicts
+    )
+    tool_call_id: Optional[str] = None  # For role 'tool'
+    name: Optional[str] = None  # For tool messages to specify function name
     should_cache: bool = False
+
 
 @dataclass(frozen=True)
 class OpenAIMessageChain:
@@ -32,6 +40,8 @@ class OpenAIMessageChain:
     response_list: List[Any] = field(default_factory=tuple)
     verbose: bool = False
     response_format: Optional[Any] = None
+    tools_list: Optional[List[Any]] = None
+    tools_mapping: Optional[Dict[str, Any]] = None
     base_url: Optional[str] = None
     max_tokens: int = 4096
 
@@ -46,18 +56,62 @@ class OpenAIMessageChain:
         return self
 
     @chain_method
-    def add_message(self, content: Union[str, List[Dict[str, str]]], role: str, should_cache: bool = False):
-        assert not should_cache, "OpenAI does not support caching"
-        msg = Message(role=role, content=content, should_cache=should_cache)
+    def add_message(
+        self,
+        role: str,
+        content: Optional[Union[str, List[Dict[str, Any]], BaseModel]] = None,
+        tool_calls: Optional[List[Any]] = None,
+        tool_call_id: Optional[str] = None,
+        name: Optional[str] = None,
+        should_cache: bool = False,
+    ):
+        assert (
+            not should_cache
+        ), "OpenAI does not support caching for individual messages in this way"
+        # Ensure content is not assigned if it's meant to be None (e.g. assistant message with only tool_calls)
+        msg = Message(
+            role=role,
+            content=content,
+            tool_calls=tool_calls,
+            tool_call_id=tool_call_id,
+            name=name,
+            should_cache=should_cache,
+        )
         return replace(self, messages=self.messages + (msg,))
 
     @chain_method
     def user(self, content: Union[str, List[Dict[str, str]]], should_cache: bool = False):
-        return self.add_message(content=content, role="user", should_cache=should_cache)
+        return self.add_message(role="user", content=content, should_cache=should_cache)
 
     @chain_method
-    def bot(self, content: Union[str, List[Dict[str, str]]], should_cache: bool = False):
-        return self.add_message(content=content, role="assistant", should_cache=should_cache)
+    def bot(
+        self,
+        content: Optional[Union[str, List[Dict[str, Any]], BaseModel]] = None,
+        tool_calls: Optional[List[Any]] = None,
+        should_cache: bool = False,
+    ):
+        return self.add_message(
+            role="assistant",
+            content=content,
+            tool_calls=tool_calls,
+            should_cache=should_cache,
+        )
+
+    @chain_method
+    def tool(
+        self,
+        content: str,
+        tool_call_id: str,
+        name: Optional[str] = None,
+        should_cache: bool = False,
+    ):  # content for tool is stringified result
+        return self.add_message(
+            role="tool",
+            content=content,
+            tool_call_id=tool_call_id,
+            name=name,
+            should_cache=should_cache,
+        )
 
     @chain_method
     def system(self, content: str, should_cache: bool = False):
@@ -70,13 +124,37 @@ class OpenAIMessageChain:
         self = replace(self, response_format=response_format)
         return self
 
+    @chain_method
+    def with_tools(self, tools_list: List, tools_mapping: Dict[str, Any]):
+        """Set a Pydantic model as the expected response format."""
+        self = replace(self, tools_list=tools_list, tools_mapping=tools_mapping)
+        return self
+
     def serialize(self) -> list:
         output = []
         if self.system_prompt is not None:
             output.append({"role": "system", "content": self.system_prompt})
 
         for m in self.messages:
-            output.append({"role": m.role, "content": m.content})
+            msg_dict = {"role": m.role}
+
+            # Add content if it exists
+            if m.content is not None:
+                msg_dict["content"] = m.content
+
+            # Add tool_calls for assistant messages
+            if m.role == "assistant" and m.tool_calls is not None:
+                msg_dict["tool_calls"] = m.tool_calls
+
+            # Add tool_call_id for tool messages
+            if m.role == "tool" and m.tool_call_id is not None:
+                msg_dict["tool_call_id"] = m.tool_call_id
+
+            # Add name for tool messages
+            if m.role == "tool" and m.name is not None:
+                msg_dict["name"] = m.name
+
+            output.append(msg_dict)
 
         return output
 
@@ -92,36 +170,89 @@ class OpenAIMessageChain:
 
     @chain_method
     def generate(self):
-        if self.base_url is not None:
-            client = OpenAI(base_url=self.base_url, api_key="lm-studio")
-        else:
-            client = OpenAI()
-        msgs = self.serialize()
+        while True:
+            if self.base_url == "https://openrouter.ai/api/v1":
+                client = OpenAI(
+                    base_url=self.base_url, api_key=os.getenv("OPENROUTER_API_KEY")
+                )
+            elif self.base_url is not None:
+                client = OpenAI(
+                    base_url=self.base_url, api_key="lm-studio"
+                )  # Or a configurable key for other base URLs
+            else:
+                client = OpenAI()
+            msgs = self.serialize()
 
-        if self.response_format:
-            # Use structured output with parse
-            response = client.beta.chat.completions.parse(
-                model=self.model_name,
-                messages=msgs,
-                response_format=self.response_format,
-                max_tokens=self.max_tokens,
-                temperature=1.0
-            )
-            resp = response.choices[0].message.parsed
-        else:
-            # Regular text generation
-            response = client.chat.completions.create(
-                model=self.model_name,
-                messages=msgs,
-                max_tokens=self.max_tokens,
-                temperature=1.0
-            )
-            resp = response.choices[0].message.content
+            # Prepare common parameters
+            api_params = {
+                "model": self.model_name,
+                "messages": msgs,
+                "max_tokens": self.max_tokens,
+                "temperature": 1.0,
+            }
 
-        self = replace(self, 
-                      metric_list=self.metric_list + (self.parse_metrics(response),),
-                      response_list=self.response_list + (resp,)
-                      )
+            # Only add tools if they exist
+            if self.tools_list is not None:
+                api_params["tools"] = self.tools_list
+
+            if self.response_format:
+                # Use structured output with parse
+                response = client.beta.chat.completions.parse(
+                    response_format=self.response_format, **api_params
+                )
+                # For structured output, get the parsed response
+                resp = response.choices[0].message.parsed
+                msg = response.choices[0].message
+            else:
+                response = client.chat.completions.create(**api_params)
+                msg = response.choices[0].message
+                resp = msg.content
+
+            self = replace(
+                self,
+                metric_list=self.metric_list + (self.parse_metrics(response),),
+                response_list=self.response_list + (resp,),
+            )
+
+            # Check if the assistant made tool calls
+            if msg.tool_calls and len(msg.tool_calls) > 0:
+                # Add the assistant message with tool calls to the conversation
+                self = self.bot(content=msg.content, tool_calls=msg.tool_calls)
+
+                # Execute each tool call and add the results
+                for tool_call in msg.tool_calls:
+                    print(f"Tool call: {tool_call}")
+                    tool_name = tool_call.function.name
+                    tool_args = json.loads(tool_call.function.arguments)
+
+                    # Execute the tool function
+                    if self.tools_mapping and tool_name in self.tools_mapping:
+
+                        tool_response = self.tools_mapping[tool_name](**tool_args)
+                        # Convert tool response to string for the API
+                        tool_response_str = (
+                            json.dumps(tool_response)
+                            if not isinstance(tool_response, str)
+                            else tool_response
+                        )
+                        print(f"Tool response: {tool_response_str}")
+
+                        # Add tool result with proper tool_call_id and function name
+                        self = self.tool(
+                            content=tool_response_str,
+                            tool_call_id=tool_call.id,
+                            name=tool_name,
+                        )
+                    else:
+                        # Handle case where tool is not found
+                        error_msg = f"Tool '{tool_name}' not found in tools_mapping"
+                        self = self.tool(
+                            content=error_msg, tool_call_id=tool_call.id, name=tool_name
+                        )
+            else:
+                # No tool calls, we're done
+                break
+
         return self
 
     # genrates and appends the last assistant message into the chain
