@@ -296,7 +296,7 @@ class ChatSession:
 
     async def process_user_input(self, user_input: str) -> str:
         """Process user input using the async chain."""
-        self.chain = await self.chain.user(user_input).generate()
+        self.chain = await self.chain.user(user_input).generate_bot()
 
         if self.chain.last_response:
             return self.chain.last_response
@@ -330,6 +330,7 @@ class ChatSession:
                     "Use the appropriate tool based on the user's question. "
                     "If no tool is needed, reply directly. "
                     "Provide natural, conversational responses based on tool results."
+                    "When you use a tool, output only json with no prefixes."
                 )
             )
 
@@ -401,6 +402,16 @@ async def main() -> None:
                 "echo": {"command": "python", "args": ["/Users/ohadr/chains/hello.py"]}
             }
         }
+        server_config = { "mcpServers": {
+        "minecraft-controller_stdio": {
+            "command": "npx",
+            "args": [
+                "tsx",
+                "/Users/ohadr/scrape_lm_copy/minecraft-web-client/minecraft-mcp-server.ts",
+                "--transport",
+                "stdio"
+            ]
+        },}}
 
     servers = [
         Server(name, srv_config)
@@ -413,7 +424,9 @@ async def main() -> None:
     await chat_session.start()
 
 
-# usage: echo "what's the weather in seattle?" | python simple_client.py --model "gemma-3-12b-it-qat" --base-url "http://localhost:1234/v1"
-# usage: echo "what's the weather in seattle?" | python simple_client.py --model "gemma-3-12b-it-qat" --base-url "http://localhost:1234/v1"
+# usage: echo "walk forwards in minecraft" | python simple_client.py
+# usage: echo "walk forwards in minecraft" | python simple_client.py --model "google/gemma-3-12b" --base-url "http://localhost:1234/v1"
+# usage: echo "what's the weather in seattle?" | python simple_client.py --model "google/gemma-3-12b" --base-url "http://localhost:1234/v1"
+# usage: echo "what's the weather in tel aviv?" | python simple_client.py --model "google/gemma-3-12b" --base-url "http://localhost:1234/v1"
 if __name__ == "__main__":
     asyncio.run(main())
