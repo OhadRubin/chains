@@ -73,6 +73,18 @@ class PromptChain:
         return replace(self, msg_chain_func=func)
 
     @chain_method
+    def pipe(self, func: Callable):
+        """Apply a function to this chain and return the result.
+
+        The function should take a PromptChain as input and return a PromptChain.
+        This enables functional composition of chain operations.
+
+        Example:
+            chain.pipe(generate_attributes).pipe(create_stages)
+        """
+        return func(self)
+
+    @chain_method
     def post_last(self, **named_transformations):
         """Apply transformations to the last response and add the results to prev_fields"""
         if not self.response_list:
@@ -93,6 +105,13 @@ class PromptChain:
         """Apply a transformation to the entire chain and add results to prev_fields"""
         new_fields = transform_func(self)
         return replace(self, prev_fields={**self.prev_fields, **new_fields})
+
+    @chain_method
+    def print_last(self):
+        """Print the last response for debugging purposes"""
+        if self.response_list:
+            print(f"Last response: {self.response_list[-1]}")
+        return self
 
     @chain_method
     def generate(self):
