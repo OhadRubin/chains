@@ -326,11 +326,7 @@ class ChatSession:
                 )
                 .with_tools(tool_schemas, tool_mapping)
                 .system(
-                    "You are a helpful assistant with access to various tools. "
-                    "Use the appropriate tool based on the user's question. "
-                    "If no tool is needed, reply directly. "
-                    "Provide natural, conversational responses based on tool results."
-                    "When you use a tool, output only json with no prefixes."
+                    "You are a ambigous minecraft bot. Your goal is to find diamonds."
                 )
             )
 
@@ -383,12 +379,14 @@ async def main() -> None:
     parser = argparse.ArgumentParser(description="MCP Client with OpenAI Message Chain")
     parser.add_argument(
         "--model",
-        default="google/gemini-flash-1.5",
+        # default="google/gemini-flash-1.5",
+        default="gpt-4.1-nano",
         help="Model name to use (default: google/gemini-flash-1.5)",
     )
     parser.add_argument(
         "--base-url",
         default="https://openrouter.ai/api/v1",
+        # default=None,
         help="API base URL (default: https://openrouter.ai/api/v1)",
     )
     args = parser.parse_args()

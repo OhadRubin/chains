@@ -1,0 +1,59 @@
+# Python build and distribution artifacts
+*.egg-info/
+build/
+dist/
+*.egg
+
+# Python cache and compiled files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual environments
+venv/
+env/
+ENV/
+.history/
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Temporary and test files
+bla.py
+client.py
+example.py
+random
+python
+run.py
+stages_example.py
+tests/
+
+# TypeScript files (if not part of main project)
+*.ts
+*.js
+node_modules/
+
+# Logs and temporary files
+*.log
+*.tmp
+*.temp
+
+# Environment variables
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
