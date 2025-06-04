@@ -165,6 +165,9 @@ async def main() -> None:
                         "--transport",
                         "stdio",
                     ],
+                    "env": {
+                    "NODE_NO_WARNINGS": "1"
+                }
                 },
             }
         }
