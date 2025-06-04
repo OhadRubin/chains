@@ -1,32 +1,37 @@
 import argparse
 import asyncio
-import logging
+
 import sys
 from dataclasses import dataclass
 from chains.msg_chains.oai_msg_chain_async import (
     OpenAIAsyncMessageChain as OpenAIMessageChain,
 )
-from mcp_utils import (
+from chains.mcp_utils import (
     Configuration,
     Server,
-    ChatSessionConfig,
     create_tool_functions,
 )
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - line %(lineno)d - %(message)s",
-)
 
 
+
+@dataclass
+class ChatSessionConfig:
+    """Configuration for chat session."""
+
+    servers: list["Server"]
+    api_key: str
+    model_name: str = "google/gemini-flash-1.5"
+    base_url: str = "https://openrouter.ai/api/v1"
+    initial_message: str | None = None
+    
 async def cleanup_servers(servers: list[Server]) -> None:
     """Clean up all servers properly."""
     for server in reversed(servers):
         try:
             await server.cleanup()
         except Exception as e:
-            logging.warning(f"Warning during final cleanup: {e}")
+            print(f"Warning during final cleanup: {e}")
 
 
 async def initialize_servers(servers: list[Server]) -> bool:
@@ -34,7 +39,7 @@ async def initialize_servers(servers: list[Server]) -> bool:
         try:
             await server.initialize()
         except Exception as e:
-            logging.error(f"Failed to initialize server: {e}")
+            print(f"Failed to initialize server: {e}")
             await cleanup_servers(servers)
             return False
     return True
@@ -64,7 +69,7 @@ async def handle_interactive_session(
         try:
             user_input = input("You: ").strip()
             if user_input.lower() in ["quit", "exit"]:
-                logging.info("\nExiting...")
+                print("\nExiting...")
                 break
 
             if not user_input:
@@ -75,10 +80,10 @@ async def handle_interactive_session(
             print(f"Assistant: {chain.last_response}")
 
         except KeyboardInterrupt:
-            logging.info("\nExiting...")
+            print("\nExiting...")
             break
         except Exception as e:
-            logging.error(f"Error during interaction: {e}")
+            print(f"Error during interaction: {e}")
             continue
 
     return chain
@@ -99,7 +104,7 @@ async def run_chat_session(config: ChatSessionConfig) -> None:
         tool_schemas, tool_mapping = await create_tool_functions(config.servers)
 
         # Initialize the chain
-        chain = await (
+        chain = (
             OpenAIMessageChain(
                 model_name=config.model_name,
                 base_url=config.base_url,
@@ -115,15 +120,6 @@ async def run_chat_session(config: ChatSessionConfig) -> None:
         await cleanup_servers(config.servers)
 
 
-@dataclass
-class ChatSessionConfig:
-    """Configuration for chat session."""
-
-    servers: list["Server"]
-    api_key: str
-    model_name: str = "google/gemini-flash-1.5"
-    base_url: str = "https://openrouter.ai/api/v1"
-    initial_message: str | None = None
 
 
 async def main() -> None:
@@ -159,16 +155,19 @@ async def main() -> None:
                 "echo": {"command": "python", "args": ["/Users/ohadr/chains/hello.py"]}
             }
         }
-        server_config = { "mcpServers": {
-        "minecraft-controller_stdio": {
-            "command": "npx",
-            "args": [
-                "tsx",
-                "/Users/ohadr/scrape_lm_copy/minecraft-web-client/minecraft-mcp-server.ts",
-                "--transport",
-                "stdio"
-            ]
-        },}}
+        server_config = {
+            "mcpServers": {
+                "minecraft-controller_stdio": {
+                    "command": "npx",
+                    "args": [
+                        "tsx",
+                        "/Users/ohadr/scrape_lm_copy/minecraft-web-client/minecraft-mcp-server.ts",
+                        "--transport",
+                        "stdio",
+                    ],
+                },
+            }
+        }
 
     servers = [
         Server(name, srv_config)

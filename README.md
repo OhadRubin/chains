@@ -41,6 +41,7 @@ result.print_cost()
 - **Custom Operations**: Apply functions with `.apply()` or `.map()`
 - **Structured Output**: Generate Pydantic models directly from prompts
 - **Single Chain Workflows**: One chain flows through all operations with shared state
+- **MCP Integration**: Connect to Model Context Protocol (MCP) servers for tool support
 
 ## Basic Methods
 
@@ -188,6 +189,64 @@ Set variables once with `.set_prev_fields()`, use anywhere with `{variable_name}
 Chain operations with `.pipe(function)` where each function transforms the chain.
 
 See `run_simple.py` for a complete example showcasing these patterns.
+
+## MCP Integration
+
+The framework includes support for Model Context Protocol (MCP) servers, enabling LLMs to access external tools and data sources. This allows you to create powerful AI agents that can interact with real systems.
+
+### Features
+- **Tool Discovery**: Automatically discover tools from MCP servers
+- **Async Tool Execution**: Execute tools with retry mechanisms and proper error handling  
+- **Multi-Server Support**: Connect to multiple MCP servers simultaneously
+- **Seamless Integration**: Tools appear as native functions to the LLM
+
+### Usage
+
+```python
+# See examples/mcp_chat.py for a complete implementation
+from chains.mcp_utils import Configuration, Server, create_tool_functions
+from chains.msg_chains.oai_msg_chain_async import OpenAIAsyncMessageChain
+
+# Initialize MCP servers
+servers = [
+    Server("minecraft-controller", {
+        "command": "npx",
+        "args": ["tsx", "path/to/minecraft-mcp-server.ts"]
+    })
+]
+
+# Initialize and connect
+for server in servers:
+    await server.initialize()
+
+# Create tool functions
+tool_schemas, tool_mapping = await create_tool_functions(servers)
+
+# Create chain with tools
+chain = await (
+    OpenAIAsyncMessageChain(model_name="gpt-4")
+    .with_tools(tool_schemas, tool_mapping)
+    .system("You are an AI assistant with access to external tools.")
+)
+
+# Use tools naturally in conversation
+chain = await chain.user("Take a screenshot in Minecraft").generate_bot()
+```
+
+### Available Examples
+
+- `examples/mcp_chat.py`: Interactive chat with MCP tool support
+- `examples/hello.py`: Simple MCP server example
+
+### Command Line Usage
+
+```bash
+# Run interactive chat with tools
+python examples/mcp_chat.py --model "gpt-4" --msg "walk forward in minecraft"
+
+# Use different models and endpoints
+python examples/mcp_chat.py --model "google/gemini-flash-1.5" --base-url "https://openrouter.ai/api/v1"
+```
 
 ## Caching
 
