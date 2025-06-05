@@ -4,7 +4,7 @@ with open("README.md", "r", encoding="utf-8") as fh:
     long_description = fh.read()
 
 setup(
-    name="chains",
+    name="chains-py",
     version="0.1.0",
     author="ohadr",
     description="A unified, chainable interface for working with multiple LLM providers",
@@ -29,4 +29,4 @@ setup(
         "fire",
         "instructor",
     ],
-) 
+)
