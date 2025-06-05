@@ -13,8 +13,6 @@ from chains.mcp_utils import (
 )
 
 
-
-
 @dataclass
 class ChatSessionConfig:
     """Configuration for chat session."""
@@ -24,7 +22,8 @@ class ChatSessionConfig:
     model_name: str = "google/gemini-flash-1.5"
     base_url: str = "https://openrouter.ai/api/v1"
     initial_message: str | None = None
-    
+    constant_msg: str | None = None
+
 async def cleanup_servers(servers: list[Server]) -> None:
     """Clean up all servers properly."""
     for server in reversed(servers):
@@ -46,17 +45,8 @@ async def initialize_servers(servers: list[Server]) -> bool:
 
 
 async def handle_interactive_session(
-    chain: OpenAIMessageChain, initial_message: str | None = None
+    chain: OpenAIMessageChain, initial_message: str | None = None, constant_msg: str | None = None
 ) -> OpenAIMessageChain:
-    """Handle interactive chat session.
-
-    Args:
-        chain: The message chain to process input with
-        initial_message: Optional initial message to send first
-
-    Returns:
-        Updated message chain after the session
-    """
     # Send initial message if provided
     if initial_message:
         print(f"You: {initial_message}")
@@ -67,10 +57,13 @@ async def handle_interactive_session(
 
     while True:
         try:
-            user_input = input("You: ").strip()
-            if user_input.lower() in ["quit", "exit"]:
-                print("\nExiting...")
-                break
+            if constant_msg is not None:
+                user_input = constant_msg
+            else:
+                user_input = input("You: ").strip()
+                if user_input.lower() in ["quit", "exit"]:
+                    print("\nExiting...")
+                    break
 
             if not user_input:
                 continue
@@ -108,18 +101,28 @@ async def run_chat_session(config: ChatSessionConfig) -> None:
             OpenAIMessageChain(
                 model_name=config.model_name,
                 base_url=config.base_url,
+                verbose=True,
             )
             .with_tools(tool_schemas, tool_mapping)
-            .system("You are a ambigous minecraft bot. Your goal is to find diamonds.")
+            
+            .system(
+"""You are a *very* ambitious minecraft player.
+Your goal is to find and aquire dirt, wood, stone, iron and diamonds. All in your quest to kill the Ender dragon.
+Follow Minecraft progression - wood first for tools, then stone, then dig deep for iron and diamonds.
+You are autonomous and you can do anything you want.
+I suggest making rotations of plus/minus 45 degrees at a time.
+Craft wooden tools before trying to mine harder materials like stone or terracotta (remember that they take a while to mine).
+Look for surface stone exposures, caves, or ravines rather than digging through hard blocks with bare hands
+Don't call multiple tools at once.
+"""
+            )
         )
 
         # Handle interactive session with optional initial message
-        chain = await handle_interactive_session(chain, config.initial_message)
+        chain = await handle_interactive_session(chain, config.initial_message, config.constant_msg)
 
     finally:
         await cleanup_servers(config.servers)
-
-
 
 
 async def main() -> None:
@@ -134,14 +137,19 @@ async def main() -> None:
     )
     parser.add_argument(
         "--base-url",
-        default="https://openrouter.ai/api/v1",
-        # default=None,
+        # default="https://openrouter.ai/api/v1",
+        default=None,
         help="API base URL (default: https://openrouter.ai/api/v1)",
     )
     parser.add_argument(
         "--msg",
         default=None,
         help="An optional first message to send to the assistant",
+    )
+    parser.add_argument(
+        "--constant-msg",
+        default=None,
+        help="An optional constant message to send to the assistant",
     )
 
     args = parser.parse_args()
@@ -183,6 +191,7 @@ async def main() -> None:
         model_name=args.model,
         base_url=args.base_url,
         initial_message=args.msg,
+        constant_msg=args.constant_msg,
     )
 
     await run_chat_session(chat_config)

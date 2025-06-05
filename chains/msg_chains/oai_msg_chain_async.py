@@ -214,6 +214,19 @@ class OpenAIAsyncMessageChain:
         return self.user(content)
 
     @chain_method
+    async def user_image_file(self, prompt: str, image_paths: List[str]):
+        """Send a user message with local image files encoded as base64 data URIs."""
+        encoded_images = [await _encode_to_data_uri(path) for path in image_paths]
+        content = [{"type": "text", "text": prompt}] + [
+            {
+                "type": "image_url",
+                "image_url": {"url": data_uri},
+            }
+            for data_uri in encoded_images
+        ]
+        return self.user(content)
+
+    @chain_method
     def user_audio_url(self, prompt: str, audio_urls: List[str]):
         """Send a user message with a text prompt and one or more audio URLs."""
         content = [{"type": "text", "text": prompt}] + [
@@ -315,13 +328,23 @@ class OpenAIAsyncMessageChain:
 
     @staticmethod
     def parse_metrics(resp):
-        return dict(
-            input_tokens=resp.usage.prompt_tokens,
-            output_tokens=resp.usage.completion_tokens,
-            total_tokens=resp.usage.total_tokens,
-            input_tokens_cache_read=0,  # OpenAI doesn't have cache metrics
-            input_tokens_cache_create=0
-        )
+        try:
+            return dict(
+                input_tokens=resp.usage.prompt_tokens,
+                output_tokens=resp.usage.completion_tokens,
+                total_tokens=resp.usage.total_tokens,
+                input_tokens_cache_read=0,  # OpenAI doesn't have cache metrics
+                input_tokens_cache_create=0
+            )
+        except Exception as e:
+            print(f"Error parsing metrics: {e}")
+            return dict(
+                input_tokens=0,
+                output_tokens=0,
+                total_tokens=0,
+                input_tokens_cache_read=0,  # OpenAI doesn't have cache metrics
+                input_tokens_cache_create=0
+            )
 
     @chain_method
     async def generate(self):
@@ -373,11 +396,13 @@ class OpenAIAsyncMessageChain:
             if msg.tool_calls and len(msg.tool_calls) > 0:
                 # Add the assistant message with tool calls to the conversation
                 self = self.bot(content=msg.content, tool_calls=msg.tool_calls)
+                print(f"Bot (thinking): {msg.content}")
 
                 # Execute each tool call and add the results
                 for tool_call in msg.tool_calls:
                     print(f"Tool call: {tool_call}")
                     tool_name = tool_call.function.name
+
                     tool_args = json.loads(tool_call.function.arguments)
                     tool_args = await _resolve_multimodal_args(tool_args)
 
@@ -394,6 +419,7 @@ class OpenAIAsyncMessageChain:
                         ):
                             # Add multimodal content as a user message so the LLM can see images
                             multimodal_content = tool_response["multimodal_content"]
+                            print("Tool response contained multimodal content")
 
                             # Add tool result as text first
                             text_parts = [
@@ -406,6 +432,7 @@ class OpenAIAsyncMessageChain:
                                 if text_parts
                                 else f"Tool {tool_name} executed successfully"
                             )
+                            print(tool_text)
 
                             self = self.tool(
                                 content=tool_text,
@@ -503,6 +530,136 @@ class OpenAIAsyncMessageChain:
 
     def print_cost(self):
         calc_cost(self.metric_list)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize to dictionary, excluding non-serializable fields."""
+        import json
+
+        def is_json_serializable(obj):
+            """Check if an object is JSON serializable."""
+            try:
+                json.dumps(obj)
+                return True
+            except (TypeError, ValueError):
+                return False
+
+        # Convert messages to serializable format
+        serialized_messages = []
+        for msg in self.messages:
+            msg_dict = {
+                "role": msg.role,
+                "tool_call_id": msg.tool_call_id,
+                "name": msg.name,
+                "should_cache": msg.should_cache,
+            }
+
+            # Handle content carefully - only include if serializable
+            if msg.content is not None and is_json_serializable(msg.content):
+                msg_dict["content"] = msg.content
+            else:
+                msg_dict["content"] = None
+
+            # Convert tool_calls to serializable format (dict instead of ToolCall objects)
+            if msg.tool_calls:
+                msg_dict["tool_calls"] = []
+                for tool_call in msg.tool_calls:
+                    if hasattr(tool_call, "model_dump"):  # Pydantic object
+                        msg_dict["tool_calls"].append(tool_call.model_dump())
+                    elif hasattr(tool_call, "dict"):  # Older pydantic
+                        msg_dict["tool_calls"].append(tool_call.dict())
+                    elif isinstance(tool_call, dict):
+                        msg_dict["tool_calls"].append(tool_call)
+                    else:
+                        # Convert OpenAI ToolCall object to dict manually
+                        msg_dict["tool_calls"].append(
+                            {
+                                "id": getattr(tool_call, "id", None),
+                                "type": getattr(tool_call, "type", "function"),
+                                "function": {
+                                    "name": (
+                                        getattr(tool_call.function, "name", "")
+                                        if hasattr(tool_call, "function")
+                                        else ""
+                                    ),
+                                    "arguments": (
+                                        getattr(tool_call.function, "arguments", "{}")
+                                        if hasattr(tool_call, "function")
+                                        else "{}"
+                                    ),
+                                },
+                            }
+                        )
+            else:
+                msg_dict["tool_calls"] = None
+
+            serialized_messages.append(msg_dict)
+
+        # Only include serializable response_list items
+        serializable_responses = []
+        for response in self.response_list:
+            if is_json_serializable(response):
+                serializable_responses.append(response)
+            else:
+                # Convert to string representation for non-serializable objects
+                serializable_responses.append(str(response))
+
+        return {
+            "model_name": self.model_name,
+            "messages": serialized_messages,
+            "system_prompt": (
+                self.system_prompt
+                if is_json_serializable(self.system_prompt)
+                else str(self.system_prompt) if self.system_prompt is not None else None
+            ),
+            "cache_system": self.cache_system,
+            "metric_list": list(self.metric_list),
+            "response_list": serializable_responses,
+            "base_url": self.base_url,
+            "max_tokens": self.max_tokens,
+            # Skip verbose, response_format and tools_mapping as they're not needed
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "OpenAIAsyncMessageChain":
+        """Deserialize from dictionary."""
+        # Convert messages back to Message objects
+        messages = []
+        for msg_data in data.get("messages", []):
+            msg = Message(
+                role=msg_data["role"],
+                content=msg_data.get("content"),
+                tool_calls=msg_data.get("tool_calls"),  # Keep as dicts
+                tool_call_id=msg_data.get("tool_call_id"),
+                name=msg_data.get("name"),
+                should_cache=msg_data.get("should_cache", False),
+            )
+            messages.append(msg)
+
+        return cls(
+            model_name=data.get("model_name", "gpt-4o"),
+            messages=tuple(messages),
+            system_prompt=data.get("system_prompt"),
+            cache_system=data.get("cache_system", False),
+            metric_list=tuple(data.get("metric_list", [])),
+            response_list=tuple(data.get("response_list", [])),
+            verbose=data.get("verbose", False),
+            base_url=data.get("base_url"),
+            max_tokens=data.get("max_tokens", 4096),
+            # response_format and tools_mapping will be None
+        )
+
+    def to_json(self) -> str:
+        """Serialize to JSON string."""
+        import json
+
+        return json.dumps(self.to_dict(), indent=2)
+
+    @classmethod
+    def from_json(cls, json_str: str) -> "OpenAIAsyncMessageChain":
+        """Deserialize from JSON string."""
+        import json
+
+        return cls.from_dict(json.loads(json_str))
 
 
 def test_chain1():
@@ -635,7 +792,156 @@ def test_structured_output():
     print(f"Participants: {', '.join(event.participants)}")
 
 
-import fire
+def test_serialization():
+    """Test that serialization and deserialization work correctly."""
+    # Create a chain with various message types
+    chain = OpenAIAsyncMessageChain(model_name="gpt-4o")
+    chain = (
+        chain.system("You are a helpful assistant")
+        .user("Hello!")
+        .bot("Hi there! How can I help you?")
+        .user("What's 2+2?")
+    )
+
+    # Add some mock data to test serialization
+    chain = replace(
+        chain,
+        response_list=("Hi there! How can I help you?", "2+2 equals 4"),
+        metric_list=(
+            {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+            {"input_tokens": 8, "output_tokens": 3, "total_tokens": 11},
+        ),
+    )
+
+    # Test serialization
+    json_str = chain.to_json()
+    print("Serialized chain:")
+    print(json_str[:200] + "..." if len(json_str) > 200 else json_str)
+
+    # Test deserialization
+    restored_chain = OpenAIAsyncMessageChain.from_json(json_str)
+
+    # Verify the data matches
+    assert restored_chain.model_name == chain.model_name
+    assert restored_chain.system_prompt == chain.system_prompt
+    assert len(restored_chain.messages) == len(chain.messages)
+    assert restored_chain.response_list == chain.response_list
+    assert restored_chain.metric_list == chain.metric_list
+
+    print("✅ Serialization test passed!")
+
+
+def test_serialization_debug():
+    """Debug serialization issues by testing each field individually."""
+    import json
+
+    # Create a minimal chain
+    chain = OpenAIAsyncMessageChain(model_name="gpt-4o")
+    chain = chain.system("Test").user("Hello")
+
+    print("Testing individual fields:")
+
+    # Test each field individually
+    test_data = {
+        "model_name": chain.model_name,
+        "system_prompt": chain.system_prompt,
+        "cache_system": chain.cache_system,
+        "verbose": chain.verbose,
+        "base_url": chain.base_url,
+        "max_tokens": chain.max_tokens,
+    }
+
+    for key, value in test_data.items():
+        try:
+            json.dumps({key: value})
+            print(f"✅ {key}: OK")
+        except Exception as e:
+            print(f"❌ {key}: {type(value)} - {e}")
+
+    # Test messages
+    try:
+        messages_data = []
+        for i, msg in enumerate(chain.messages):
+            msg_dict = {
+                "role": msg.role,
+                "content": msg.content,
+                "tool_calls": msg.tool_calls,
+                "tool_call_id": msg.tool_call_id,
+                "name": msg.name,
+                "should_cache": msg.should_cache,
+            }
+            try:
+                json.dumps(msg_dict)
+                print(f"✅ Message {i}: OK")
+            except Exception as e:
+                print(f"❌ Message {i}: {e}")
+                # Test each field in the message
+                for field, val in msg_dict.items():
+                    try:
+                        json.dumps({field: val})
+                        print(f"  ✅ {field}: OK")
+                    except Exception as fe:
+                        print(f"  ❌ {field}: {type(val)} - {fe}")
+    except Exception as e:
+        print(f"❌ Messages: {e}")
+
+    # Test tuples
+    try:
+        json.dumps(list(chain.metric_list))
+        print("✅ metric_list: OK")
+    except Exception as e:
+        print(f"❌ metric_list: {e}")
+
+    try:
+        json.dumps(list(chain.response_list))
+        print("✅ response_list: OK")
+    except Exception as e:
+        print(f"❌ response_list: {e}")
+
+
+async def test_image_serialization():
+    """Test image handling with serialization."""
+    # Create initial chain with image
+    chain = OpenAIAsyncMessageChain(model_name="gpt-4o")
+    chain = await chain.user_image_file(
+        "Describe this image in detail.",
+        [
+            "/Users/ohadr/chains/a_solid_black_silhouette_of_a_a_man_and_woman_holding_hands__-shading__sky_2061071959.png"
+        ],
+    )
+
+    # Get initial description
+    chain = await chain.generate_bot()
+    print("\nInitial description:")
+    print(chain.last_response)
+
+    # Serialize the chain
+    json_str = chain.to_json()
+    print("\nSerialized chain (truncated):")
+    print(json_str[:200] + "..." if len(json_str) > 200 else json_str)
+
+    # Deserialize and ask follow-up
+    restored_chain = OpenAIAsyncMessageChain.from_json(json_str)
+    restored_chain = restored_chain.user(
+        "What is the woman holding? Answer in one word."
+    )
+    restored_chain = await restored_chain.generate_bot()
+    print("\nFollow-up answer about what she's holding:")
+    print(restored_chain.last_response)
+
+    # Ask about the type
+    restored_chain = restored_chain.user("What type is it?")
+    restored_chain = await restored_chain.generate_bot()
+    print("\nFollow-up about the type:")
+    print(restored_chain.last_response)
+
+    print("\n✅ Image serialization test completed!")
+
 
 if __name__ == "__main__":
-    fire.Fire()
+    import asyncio
+
+    async def main():
+        await test_image_serialization()
+
+    asyncio.run(main())
