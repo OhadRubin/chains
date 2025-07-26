@@ -135,6 +135,17 @@ async def _resolve_multimodal_output(output: Any) -> Any:
         return output
 
 
+import json
+
+def is_json_serializable(obj):
+    """Check if an object is JSON serializable."""
+    try:
+        json.dumps(obj)
+        return True
+    except (TypeError, ValueError):
+        return False
+
+
 def chain_method(func):
     """Decorator to convert a function into a chainable method that supports
     both synchronous and asynchronous functions."""
@@ -154,9 +165,6 @@ def chain_method(func):
 
 
 
-
-
-
 @dataclass(frozen=True)
 class Message:
     role: str
@@ -168,7 +176,7 @@ class Message:
     name: Optional[str] = None  # For tool messages to specify function name
     should_cache: bool = False
     
-    def serialize(self):
+    def serialize(self, ser_tool_calls: bool = False):
         msg_dict = {"role": self.role}
 
         # Add content if it exists
@@ -177,7 +185,10 @@ class Message:
 
         # Add tool_calls for assistant messages
         if self.role == "assistant" and self.tool_calls is not None:
-            msg_dict["tool_calls"] = self.tool_calls
+            if not ser_tool_calls:
+                msg_dict["tool_calls"] = self.tool_calls
+            else:
+                msg_dict["tool_calls"] = [serialize_tool_call(tool_call) for tool_call in self.tool_calls]
 
         # Add tool_call_id for tool messages
         if self.role == "tool" and self.tool_call_id is not None:
@@ -243,7 +254,7 @@ class OpenAIAsyncMessageChain:
             should_cache=should_cache,
         )
         if self.stream_queue is not None:
-            m = msg.serialize()
+            m = msg.serialize(ser_tool_calls=True)
             m["session_id"] = self.session_id
             self.stream_queue.put_nowait(m)
         return replace(self, messages=self.messages + (msg,))
@@ -346,6 +357,10 @@ class OpenAIAsyncMessageChain:
     @chain_method
     def system(self, content: str, should_cache: bool = False):
         self = replace(self, system_prompt=content, cache_system=should_cache)
+        if self.stream_queue is not None:
+            m = {"role": "system", "content": content}
+            m["session_id"] = self.session_id
+            self.stream_queue.put_nowait(m)
         return self
 
     @chain_method
@@ -357,6 +372,10 @@ class OpenAIAsyncMessageChain:
     @chain_method
     def with_tools(self, tools_list: List, tools_mapping: Dict[str, Any]):
         """Set a Pydantic model as the expected response format."""
+        if self.stream_queue is not None:
+            m = {"role": "tool_spec", "content": json.dumps(tools_list)}
+            m["session_id"] = self.session_id
+            self.stream_queue.put_nowait(m)
         self = replace(self, tools_list=tools_list, tools_mapping=tools_mapping)
         return self
 
@@ -460,7 +479,6 @@ class OpenAIAsyncMessageChain:
                     tool_args = json.loads(tool_call.function.arguments)
                     tool_args = await _resolve_multimodal_args(tool_args)
                 except Exception as e:
-                    # print(f"Error parsing tool arguments: {e}")
                     skip_tool_calls = True
             else:
                 tool_args = {}
@@ -594,15 +612,7 @@ class OpenAIAsyncMessageChain:
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize to dictionary, excluding non-serializable fields."""
-        import json
 
-        def is_json_serializable(obj):
-            """Check if an object is JSON serializable."""
-            try:
-                json.dumps(obj)
-                return True
-            except (TypeError, ValueError):
-                return False
 
         # Convert messages to serializable format
         serialized_messages = []
