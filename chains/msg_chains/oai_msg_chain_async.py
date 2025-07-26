@@ -9,9 +9,37 @@ import base64
 import httpx
 import mimetypes
 from pydantic import BaseModel
-
+from asyncio import Queue
 
 from chains.utils import calc_cost
+
+
+def serialize_tool_call(tool_call) -> dict:
+    """Convert a tool call object to a serializable dictionary."""
+    if hasattr(tool_call, "model_dump"):  # Pydantic object
+        return tool_call.model_dump()
+    elif hasattr(tool_call, "dict"):  # Older pydantic
+        return tool_call.dict()
+    elif isinstance(tool_call, dict):
+        return tool_call
+    else:
+        # Convert OpenAI ToolCall object to dict manually
+        return {
+            "id": getattr(tool_call, "id", None),
+            "type": getattr(tool_call, "type", "function"),
+            "function": {
+                "name": (
+                    getattr(tool_call.function, "name", "")
+                    if hasattr(tool_call, "function")
+                    else ""
+                ),
+                "arguments": (
+                    getattr(tool_call.function, "arguments", "")
+                    if hasattr(tool_call, "function")
+                    else ""
+                ),
+            },
+        }
 
 
 async def encode_base64_content_from_url(content_url: str) -> str:
@@ -125,6 +153,10 @@ def chain_method(func):
         return wrapper
 
 
+
+
+
+
 @dataclass(frozen=True)
 class Message:
     role: str
@@ -135,7 +167,31 @@ class Message:
     tool_call_id: Optional[str] = None  # For role 'tool'
     name: Optional[str] = None  # For tool messages to specify function name
     should_cache: bool = False
+    
+    def serialize(self):
+        msg_dict = {"role": self.role}
 
+        # Add content if it exists
+        if self.content is not None:
+            msg_dict["content"] = self.content
+
+        # Add tool_calls for assistant messages
+        if self.role == "assistant" and self.tool_calls is not None:
+            msg_dict["tool_calls"] = self.tool_calls
+
+        # Add tool_call_id for tool messages
+        if self.role == "tool" and self.tool_call_id is not None:
+            msg_dict["tool_call_id"] = self.tool_call_id
+
+        # Add name for tool messages
+        if self.role == "tool" and self.name is not None:
+            msg_dict["name"] = self.name
+        return msg_dict
+
+
+import uuid
+def generate_session_id():
+    return str(uuid.uuid4())
 
 @dataclass(frozen=True)
 class OpenAIAsyncMessageChain:
@@ -151,6 +207,8 @@ class OpenAIAsyncMessageChain:
     tools_mapping: Optional[Dict[str, Any]] = None
     base_url: Optional[str] = None
     max_tokens: int = 4096
+    session_id: str = field(default_factory=generate_session_id)
+    stream_queue: Optional[Queue] = None
 
     @chain_method
     def quiet(self):
@@ -184,6 +242,10 @@ class OpenAIAsyncMessageChain:
             name=name,
             should_cache=should_cache,
         )
+        if self.stream_queue is not None:
+            m = msg.serialize()
+            m["session_id"] = self.session_id
+            self.stream_queue.put_nowait(m)
         return replace(self, messages=self.messages + (msg,))
 
     @chain_method
@@ -304,25 +366,7 @@ class OpenAIAsyncMessageChain:
             output.append({"role": "system", "content": self.system_prompt})
 
         for m in self.messages:
-            msg_dict = {"role": m.role}
-
-            # Add content if it exists
-            if m.content is not None:
-                msg_dict["content"] = m.content
-
-            # Add tool_calls for assistant messages
-            if m.role == "assistant" and m.tool_calls is not None:
-                msg_dict["tool_calls"] = m.tool_calls
-
-            # Add tool_call_id for tool messages
-            if m.role == "tool" and m.tool_call_id is not None:
-                msg_dict["tool_call_id"] = m.tool_call_id
-
-            # Add name for tool messages
-            if m.role == "tool" and m.name is not None:
-                msg_dict["name"] = m.name
-
-            output.append(msg_dict)
+            output.append(m.serialize())
 
         return output
 
@@ -391,90 +435,107 @@ class OpenAIAsyncMessageChain:
                 metric_list=self.metric_list + (self.parse_metrics(response),),
                 response_list=self.response_list + (resp,),
             )
-
-            # Check if the assistant made tool calls
             if msg.tool_calls and len(msg.tool_calls) > 0:
-                # Add the assistant message with tool calls to the conversation
-                self = self.bot(content=msg.content, tool_calls=msg.tool_calls)
-                print(f"Bot (thinking): {msg.content}")
+                self = await self.handle_tool_calls(msg)
+            else:
+                break
+            
+        return self
 
-                # Execute each tool call and add the results
-                for tool_call in msg.tool_calls:
-                    print(f"Tool call: {tool_call}")
-                    tool_name = tool_call.function.name
+    async def handle_tool_calls(self, msg):
+        # Add the assistant message with tool calls to the conversation
+        self = self.bot(content=msg.content, tool_calls=msg.tool_calls)
+        if msg.content and self.verbose:
+            print(f"<bot_thinking>{msg.content}</bot_thinking>")
+        skip_tool_calls = False
 
+        # Execute each tool call and add the results
+        for tool_call in msg.tool_calls:
+            if self.verbose:
+                print(f"<tool_call>{json.dumps(serialize_tool_call(tool_call))}</tool_call>")
+            tool_name = tool_call.function.name
+
+            if tool_call.function.arguments:
+                try:
                     tool_args = json.loads(tool_call.function.arguments)
                     tool_args = await _resolve_multimodal_args(tool_args)
-
-                    # Execute the tool function
-                    if self.tools_mapping and tool_name in self.tools_mapping:
-
-                        tool_response = await self.tools_mapping[tool_name](**tool_args)
-                        tool_response = await _resolve_multimodal_output(tool_response)
-
-                        # Handle multimodal content specially
-                        if (
-                            isinstance(tool_response, dict)
-                            and "multimodal_content" in tool_response
-                        ):
-                            # Add multimodal content as a user message so the LLM can see images
-                            multimodal_content = tool_response["multimodal_content"]
-                            print("Tool response contained multimodal content")
-
-                            # Add tool result as text first
-                            text_parts = [
-                                item["text"]
-                                for item in multimodal_content
-                                if item.get("type") == "text"
-                            ]
-                            tool_text = (
-                                " ".join(text_parts)
-                                if text_parts
-                                else f"Tool {tool_name} executed successfully"
-                            )
-                            print(tool_text)
-
-                            self = self.tool(
-                                content=tool_text,
-                                tool_call_id=tool_call.id,
-                                name=tool_name,
-                            )
-
-                            # Then add the multimodal content as a user message
-                            if any(
-                                item.get("type") == "image_url"
-                                for item in multimodal_content
-                            ):
-                                user_prompt = f"Here's the result from {tool_name}:"
-                                self = self.user(
-                                    [{"type": "text", "text": user_prompt}]
-                                    + multimodal_content
-                                )
-                        else:
-                            # Convert tool response to string for the API
-                            tool_response_str = (
-                                json.dumps(tool_response)
-                                if not isinstance(tool_response, str)
-                                else tool_response
-                            )
-                            print(f"Tool response: {tool_response_str}")
-
-                            # Add tool result with proper tool_call_id and function name
-                            self = self.tool(
-                                content=tool_response_str,
-                                tool_call_id=tool_call.id,
-                                name=tool_name,
-                            )
-                    else:
-                        # Handle case where tool is not found
-                        error_msg = f"Tool '{tool_name}' not found in tools_mapping"
-                        self = self.tool(
-                            content=error_msg, tool_call_id=tool_call.id, name=tool_name
-                        )
+                except Exception as e:
+                    # print(f"Error parsing tool arguments: {e}")
+                    skip_tool_calls = True
             else:
-                # No tool calls, we're done
-                break
+                tool_args = {}
 
+            # Execute the tool function
+            if self.tools_mapping and tool_name in self.tools_mapping:
+                if not skip_tool_calls:
+
+                    tool_response = await self.tools_mapping[tool_name](**tool_args)
+                    tool_response = await _resolve_multimodal_output(tool_response)
+                else:
+                    tool_response = "Error: Tool arguments are not valid JSON"
+
+                # Handle multimodal content specially
+                if (
+                    isinstance(tool_response, dict)
+                    and "multimodal_content" in tool_response
+                ):
+                    # Add multimodal content as a user message so the LLM can see images
+                    multimodal_content = tool_response["multimodal_content"]
+                    if self.verbose:
+                        print("<tool_response_multimodal>Tool response contained multimodal content</tool_response_multimodal>")
+
+                    # Add tool result as text first
+                    text_parts = [
+                        item["text"]
+                        for item in multimodal_content
+                        if item.get("type") == "text"
+                    ]
+                    tool_text = (
+                        " ".join(text_parts)
+                        if text_parts
+                        else f"Tool {tool_name} executed successfully"
+                    )
+                    if self.verbose:
+                        print(f"<tool_text>{tool_text}</tool_text>")
+
+                    self = self.tool(
+                        content=tool_text,
+                        tool_call_id=tool_call.id,
+                        name=tool_name,
+                    )
+
+                    # Then add the multimodal content as a user message
+                    if any(
+                        item.get("type") == "image_url"
+                        for item in multimodal_content
+                    ):
+                        user_prompt = f"Here's the result from {tool_name}:"
+                        self = self.user(
+                            [{"type": "text", "text": user_prompt}]
+                            + multimodal_content
+                        )
+                else:
+                    # Convert tool response to string for the API
+                    tool_response_str = (
+                        json.dumps(tool_response)
+                        if not isinstance(tool_response, str)
+                        else tool_response
+                    )
+                    if self.verbose:
+                        print(f"<tool_response>{tool_response_str}</tool_response>")
+
+                    # Add tool result with proper tool_call_id and function name
+                    self = self.tool(
+                        content=tool_response_str,
+                        tool_call_id=tool_call.id,
+                        name=tool_name,
+                    )
+            else:
+                # Handle case where tool is not found
+                error_msg = f"Tool '{tool_name}' not found in tools_mapping"
+                self = self.tool(
+                    content=error_msg, tool_call_id=tool_call.id, name=tool_name
+                )
         return self
 
     # genrates and appends the last assistant message into the chain
