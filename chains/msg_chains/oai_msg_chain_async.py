@@ -400,7 +400,7 @@ class OpenAIAsyncMessageChain:
                 input_tokens_cache_create=0
             )
         except Exception as e:
-            print(f"Error parsing metrics: {e}")
+            # print(f"Error parsing metrics: {e}")
             return dict(
                 input_tokens=0,
                 output_tokens=0,

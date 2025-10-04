@@ -7,7 +7,7 @@ import sys
 
 from chains.msg_chain import MessageChain
 from pydantic import BaseModel
-import re
+from jinja2 import Environment
 
 
 def chain_method(func):
@@ -20,10 +20,17 @@ def chain_method(func):
     return wrapper
 
 
+_jinja_env = Environment()
+_jinja_env.globals['str'] = str
+_jinja_env.globals['len'] = len
+_jinja_env.globals['int'] = int
+_jinja_env.globals['float'] = float
+_jinja_env.globals['list'] = list
+_jinja_env.globals['dict'] = dict
+
 def replace_strs(s: str, kwargs: Dict[str, Any]) -> str:
-    for k, v in kwargs.items():
-        s = s.replace("{" + k + "}", str(v))
-    return s
+    template = _jinja_env.from_string(s)
+    return template.render(**kwargs)
 
 
 @dataclass(frozen=True)
@@ -85,6 +92,11 @@ class PromptChain:
         return func(self)
 
     @chain_method
+    def when(self, condition: Callable, true_func: Callable, false_func: Callable):
+        """Conditionally execute true_func or false_func based on condition"""
+        return true_func(self) if condition(self) else false_func(self)
+
+    @chain_method
     def post_last(self, **named_transformations):
         """Apply transformations to the last response and add the results to prev_fields"""
         if not self.response_list:
@@ -123,11 +135,7 @@ class PromptChain:
             chain = MessageChain.get_chain(model="gpt-4o")
             chain = chain.system("You are a helpful assistant.")
 
-        # Extract field names from the template by finding all strings enclosed in curly braces
-        field_names = re.findall(r"\{([^}]+)\}", self.curr_prompt.template)
-        kwargs = {field: self.prev_fields.get(field, "") for field in field_names}
-
-        prompt = replace_strs(self.curr_prompt.template, kwargs)
+        prompt = replace_strs(self.curr_prompt.template, self.prev_fields)
 
         # Add user message and set structure if needed
         chain = chain.user(prompt)

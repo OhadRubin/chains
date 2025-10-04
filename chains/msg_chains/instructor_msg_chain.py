@@ -129,7 +129,7 @@ class InstructorMessageChain:
         assert self.response_format
         resp = client.messages.create(
             model=self.model_name,
-            max_tokens=self.max_tokens,
+            max_completion_tokens=self.max_tokens,
             messages=msgs,
             response_model=self.response_format,
         )
