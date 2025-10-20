@@ -126,7 +126,7 @@ class InstructorMessageChain:
         else:
             raise ValueError(f"Model {self.model_name} not supported")
         msgs = self.serialize()
-        assert self.response_format
+        # assert self.response_format
         resp = client.messages.create(
             model=self.model_name,
             max_completion_tokens=self.max_tokens,
