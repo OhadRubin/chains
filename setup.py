@@ -5,7 +5,7 @@ with open("README.md", "r", encoding="utf-8") as fh:
 
 setup(
     name="chains-py",
-    version="0.1.0",
+    version="0.2.0",
     author="ohadr",
     description="A unified, chainable interface for working with multiple LLM providers",
     long_description=long_description,
@@ -28,5 +28,6 @@ setup(
         "pydantic",
         "fire",
         "instructor",
+        "jinja2",
     ],
 )
