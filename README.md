@@ -42,6 +42,7 @@ result.print_cost()
 - **Structured Output**: Generate Pydantic models directly from prompts
 - **Single Chain Workflows**: One chain flows through all operations with shared state
 - **MCP Integration**: Connect to Model Context Protocol (MCP) servers for tool support
+- **Prompt Pipelines**: Build complex multi-stage prompt workflows with `chains.prompts`
 
 ## Basic Methods
 
@@ -94,107 +95,12 @@ for attr in attributes.attributes:
     print(f"{attr.name}: {attr.description}")
 ```
 
-## Advanced: Single Chain Workflows
-
-The most powerful pattern is using **one chain that flows through all operations** with shared variables:
-
-```python
-from chains.prompt_chain import PromptChain
-from chains.msg_chain import MessageChain
-
-def generate_attributes(chain):
-    """Phase 1: Generate attributes using the single chain"""
-    return (
-        chain
-        .prompt("Generate {n_attributes} quality attributes for a \"{target_goal}\"")
-        .with_structure(AttributeList)
-        .generate()
-        .post_last(attributes_str=lambda x: x.att_into_str())  # ← Save for later use
-    )
-
-def create_stages(chain):
-    """Phase 2: Use previous results in the same chain"""
-    return (
-        chain
-        .prompt(
-            "Create {n_stages} development stages for \"{target_goal}\" using:\n"
-            "{attributes_str}"  # ← Automatically available from Phase 1
-        )
-        .with_structure(DevModel)
-        .generate()
-    )
-
-# Single chain flows through all operations
-final_result = (
-    PromptChain()
-    .set_prev_fields({
-        "target_goal": "blog post about AI safety",
-        "n_attributes": "8",
-        "n_stages": "5"
-    })
-    .set_model(lambda: MessageChain.get_chain(model="gpt-4o"))
-    .pipe(generate_attributes)
-    .pipe(create_stages)
-)
-
-# Access any response from the chain
-attributes = final_result.response_list[0]  # First operation result
-stages = final_result.response_list[1]      # Second operation result
-```
-
-## Single Chain Benefits
-
-### 🔗 **Shared Variables**
-```python
-# Variables set once are available everywhere
-chain.set_prev_fields({"target_goal": "blog post", "n_items": "5"})
-# Now use {target_goal} and {n_items} in any .prompt() call
-```
-
-### 📦 **Automatic State Capture**
-```python
-# .post_last() saves structured results for later operations
-.post_last(summary=lambda x: x.summarize())
-# Now {summary} is available in subsequent prompts
-```
-
-### 🌊 **Linear Flow**
-```python
-# Clean pipeline of operations
-chain.pipe(step1).pipe(step2).pipe(step3)
-# Each step can use results from all previous steps
-```
-
-### 📊 **Complete Traceability**
-```python
-# Access all intermediate results
-final_chain.response_list  # List of all generated responses
-final_chain.prev_fields    # All shared variables
-```
-
-## Framework Patterns
-
-The MessageChain framework enables powerful patterns for complex AI workflows:
-
-### 1. **Single Chain State Management**
-One chain maintains all context instead of manually passing data between separate chains.
-
-### 2. **Structured State Persistence**
-Use `.post_last()` to extract and store structured data for use in later operations.
-
-### 3. **Variable Interpolation**
-Set variables once with `.set_prev_fields()`, use anywhere with `{variable_name}`.
-
-### 4. **Pipelined Operations**
-Chain operations with `.pipe(function)` where each function transforms the chain.
-
-See `run_simple.py` for a complete example showcasing these patterns.
-
 ## MCP Integration
 
 The framework includes support for Model Context Protocol (MCP) servers, enabling LLMs to access external tools and data sources. This allows you to create powerful AI agents that can interact with real systems.
 
 ### Features
+
 - **Tool Discovery**: Automatically discover tools from MCP servers
 - **Async Tool Execution**: Execute tools with retry mechanisms and proper error handling  
 - **Multi-Server Support**: Connect to multiple MCP servers simultaneously
@@ -261,3 +167,42 @@ chain = chain.user("Complex instructions...", should_cache=True)
 - **Claude**: Ephemeral caching, anthropic.NOT_GIVEN support
 - **Gemini**: File-based caching, role name adaptation
 - **OpenAI**: Standard ChatGPT/GPT-4 interface
+
+## Prompt Pipelines (chains.prompts)
+
+The `chains.prompts` module provides a powerful framework for building complex multi-stage prompt workflows with:
+
+- **PromptChain**: Immutable chain for building sequences of prompts with template rendering
+- **Pipeline**: Decorator-based system for organizing multi-stage workflows
+- **Conditional Execution**: Execute stages based on runtime conditions
+- **Loop Support**: Repeat stages N times with per-iteration fields
+- **Compiled Execution**: Optional graph-based compilation for optimized execution
+
+### Quick Example
+
+```python
+from chains.prompts import PromptChain, Pipeline, register_prompt
+from pydantic import BaseModel
+
+# Define stages with decorators
+pipeline = Pipeline()
+
+@register_prompt("Generate a {{sector}} sector description")
+@pipeline.register_stage("sector_desc")
+class SectorDescription(BaseModel):
+    description: str
+    key_points: list[str]
+
+# Execute the pipeline
+chain = PromptChain()
+result = (
+    chain
+    >> pipeline
+    >> init(sector="technology")
+    >> execute
+)
+
+print(result.sector_desc)
+```
+
+For more details on prompt pipelines, see the examples in the `chains/prompts/` directory.
