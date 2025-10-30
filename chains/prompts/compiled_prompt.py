@@ -26,6 +26,7 @@ class PromptNode(ExecutionNode):
     preproc_func: Optional[Callable] = None
     output_name: Optional[str] = None
     condition: Optional[str] = None  # Optional condition field name for conditional execution
+    negate: bool = False  # If True, execute when condition is False
 
     def __post_init__(self):
         """Extract dependencies from the template"""
@@ -53,6 +54,8 @@ class LoopNode(ExecutionNode):
     num_iterations: Union[int, str] = None  # Fixed number or field reference
     output_name: str = None  # Where to store list of results
     per_iter_fields: Optional[Callable] = None  # Generate fields per iteration
+    condition: Optional[str] = None  # Optional condition field name for conditional execution
+    negate: bool = False  # If True, execute when condition is False
 
     def __post_init__(self):
         """Add dependencies"""
@@ -60,6 +63,8 @@ class LoopNode(ExecutionNode):
             self.dependencies.add(self.num_iterations)  # e.g., "num_questions"
         if self.output_name:
             self.outputs.add(self.output_name)  # e.g., "questions"
+        if self.condition:
+            self.dependencies.add(self.condition)  # Add condition as dependency
 
 
 @dataclass
@@ -211,9 +216,11 @@ class PipelineCompiler:
         if isinstance(stage_spec, dict):
             module_class = stage_spec['module_class']
             condition = stage_spec['condition']
+            negate = stage_spec.get('negate', False)
         else:
             module_class = stage_spec
             condition = None
+            negate = False
 
         # Check for control flow decorators
         if hasattr(module_class, '_loop_config'):
@@ -224,6 +231,7 @@ class PipelineCompiler:
         # Apply conditional wrapper if present
         if condition:
             node.condition = condition
+            node.negate = negate
             node.dependencies.add(condition)
 
         return node
@@ -377,9 +385,17 @@ class CompiledExecutor:
         """Execute a prompt node"""
         # Check if this node has a condition
         if node.condition:
-            condition_value = prev_fields.get(node.condition, False)
-            if not condition_value:
-                # Condition is false, skip execution
+            condition_value = prev_fields.get(node.condition)
+
+            # If condition is None, skip this node entirely (field not set)
+            if condition_value is None:
+                return chain
+
+            # Apply negation if specified
+            should_execute = not condition_value if node.negate else condition_value
+
+            if not should_execute:
+                # Condition check failed, skip execution
                 return chain
 
         # Import the shared execution logic
@@ -418,6 +434,21 @@ class CompiledExecutor:
                                 chain,
                                 prev_fields: Dict[str, Any]):
         """Execute a loop node - runs subgraph N times, collects results"""
+        # Check if this node has a condition
+        if node.condition:
+            condition_value = prev_fields.get(node.condition)
+
+            # If condition is None, skip this node entirely (field not set)
+            if condition_value is None:
+                return chain
+
+            # Apply negation if specified
+            should_execute = not condition_value if node.negate else condition_value
+
+            if not should_execute:
+                # Condition check failed, skip execution
+                return chain
+
         # Resolve num_iterations
         if isinstance(node.num_iterations, str):
             n = prev_fields[node.num_iterations]  # e.g., prev_fields["num_questions"] = 3
@@ -540,6 +571,24 @@ def monkeypatch_pipeline(pipeline_class):
 
     pipeline_class.__call__ = compiled_call
     return pipeline_class
+
+
+# Convenience export
+def enable_compiled_mode(pipeline_class):
+    """Enable compiled mode on a Pipeline class
+
+    This adds negation support and optimized execution.
+
+    Usage:
+        from chains.prompts.compiled_prompt import enable_compiled_mode
+        from chains.prompts.prompt_module import Pipeline
+
+        Pipeline = enable_compiled_mode(Pipeline)
+
+        # Now all pipelines support '!' negation in when= parameter
+        @pipeline.register_stage("task", when="!skip_task")
+    """
+    return monkeypatch_pipeline(pipeline_class)
 
 
 # ============================================================================

@@ -5,7 +5,7 @@ with open("README.md", "r", encoding="utf-8") as fh:
 
 setup(
     name="chains-py",
-    version="0.2.0",
+    version="0.2.2",
     author="ohadr",
     description="A unified, chainable interface for working with multiple LLM providers",
     long_description=long_description,

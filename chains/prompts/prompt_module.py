@@ -220,6 +220,10 @@ class Pipeline:
         Args:
             output_name: Optional name for the stage output
             when: Optional condition field name - stage only executes if this prev_fields value is truthy
+                  Supports negation with '!' prefix: when="!field" executes when field is falsy
+                  Examples:
+                    when="should_truncate" - executes when should_truncate is truthy
+                    when="!should_truncate" - executes when should_truncate is falsy
                   (Deprecated: use register_when() decorator instead for better composability)
         """
         def decorator(module_class):
@@ -240,9 +244,14 @@ class Pipeline:
 
             # Store either the module class directly or wrapped with condition
             if when:
+                # Parse negation prefix
+                negate = when.startswith('!')
+                condition_field = when[1:] if negate else when
+
                 self.stages.append({
                     'module_class': module_class,
-                    'condition': when
+                    'condition': condition_field,
+                    'negate': negate
                 })
             else:
                 self.stages.append(module_class)
@@ -257,13 +266,23 @@ class Pipeline:
             @pipeline.register_stage("my_stage")
             class MyStage(BaseModel): ...
 
+        Supports negation with '!' prefix:
+            @pipeline.register_when("!should_skip")
+            @pipeline.register_stage("my_stage")
+            class MyStage(BaseModel): ...
+
         Args:
             condition: Field name in prev_fields to check (must be bool)
+                      Prefix with '!' to negate: "!field" executes when field is falsy
         """
         def decorator(module_class):
             # Wrap the class in a dict with condition info
             # This will be stored in stages when register_stage() is called
             # We need to modify how the stage is stored in the stages list
+
+            # Parse negation prefix
+            negate = condition.startswith('!')
+            condition_field = condition[1:] if negate else condition
 
             # Find this class in stages and wrap it
             for i, stage_spec in enumerate(self.stages):
@@ -271,7 +290,8 @@ class Pipeline:
                     # Wrap it
                     self.stages[i] = {
                         'module_class': module_class,
-                        'condition': condition
+                        'condition': condition_field,
+                        'negate': negate
                     }
                     break
 
@@ -377,13 +397,26 @@ class PipelineExecutor:
             if isinstance(stage_spec, dict):
                 module_class = stage_spec['module_class']
                 condition = stage_spec['condition']
+                negate = stage_spec.get('negate', False)
+
+                # Check if condition field exists and is a bool
+                condition_value = self.chain.prev_fields.get(condition)
+
+                # If condition is None, skip this stage entirely (field not set)
+                if condition_value is None:
+                    continue
 
                 # Define execution function for the stage
                 def execute_stage(chain):
                     return self._execute_module(module_class, chain)
 
                 # Use chain.when() to conditionally execute
-                self.chain = self.chain.when(condition, true_func=execute_stage)
+                if negate:
+                    # When negated, execute in the false_func branch
+                    self.chain = self.chain.when(condition, false_func=execute_stage)
+                else:
+                    # Normal case: execute in the true_func branch
+                    self.chain = self.chain.when(condition, true_func=execute_stage)
             else:
                 # Regular stage - execute unconditionally
                 module_class = stage_spec
@@ -400,7 +433,7 @@ class PipelineExecutor:
         return self.chain
 
     def _execute_module(self, module_class, chain):
-        """Execute a single module and return updated chain"""
+        """Execute a single module tand return updated chain"""
         # Check if this is a decorated Pydantic model (new style) or PromptModule (old style)
         if hasattr(module_class, '_prompt_template'):
             # New style: Pydantic model with @register_prompt decorator
@@ -443,13 +476,26 @@ class PipelineExecutor:
                     if isinstance(stage_spec, dict):
                         module_class = stage_spec['module_class']
                         condition = stage_spec['condition']
+                        negate = stage_spec.get('negate', False)
+
+                        # Check if condition field exists and is a bool
+                        condition_value = self.chain.prev_fields.get(condition)
+
+                        # If condition is None, skip this stage entirely (field not set)
+                        if condition_value is None:
+                            continue
 
                         # Define execution function for the stage
                         def execute_stage(chain):
                             return self._execute_module(module_class, chain)
 
                         # Use chain.when() to conditionally execute
-                        self.chain = self.chain.when(condition, true_func=execute_stage)
+                        if negate:
+                            # When negated, execute in the false_func branch
+                            self.chain = self.chain.when(condition, false_func=execute_stage)
+                        else:
+                            # Normal case: execute in the true_func branch
+                            self.chain = self.chain.when(condition, true_func=execute_stage)
                     else:
                         # Regular stage - execute unconditionally
                         module_class = stage_spec
