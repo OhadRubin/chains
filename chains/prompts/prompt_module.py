@@ -6,7 +6,7 @@ from pydantic import BaseModel
 # Shared execution logic
 # ============================================================================
 
-def execute_stage_with_chain(
+async def execute_stage_with_chain(
     chain,
     template: str,
     output_class: Optional[Type[BaseModel]] = None,
@@ -48,7 +48,7 @@ def execute_stage_with_chain(
             chain = chain.set_prev_fields({**chain.prev_fields, **preproc_result})
 
     # Execute the prompt
-    chain = (
+    chain = await (
         chain
         .prompt(template)
         .with_structure(output_class)
@@ -151,7 +151,7 @@ class PromptModule:
         return None
 
 
-    def execute(self):
+    async def execute(self):
         """Execute this module's full pipeline"""
         # Run preprocessing
         preproc_result = self.preproc()
@@ -171,7 +171,7 @@ class PromptModule:
         prompt_template = self.forward(**template_fields)
 
         # Execute chain: prompt -> structure -> generate
-        self.chain = (
+        self.chain = await (
             self.chain
             .prompt(prompt_template)
             .with_structure(self._output_class)
@@ -389,7 +389,7 @@ class PipelineExecutor:
         self._output_name = name
         return self
 
-    def execute(self):
+    async def execute(self):
         """Execute all stages in sequence"""
         # Execute each module
         for stage_spec in self.stages:
@@ -407,22 +407,22 @@ class PipelineExecutor:
                     continue
 
                 # Define execution function for the stage
-                def execute_stage(chain):
-                    return self._execute_module(module_class, chain)
+                async def execute_stage(chain):
+                    return await self._execute_module(module_class, chain)
 
                 # Use chain.when() to conditionally execute
                 if negate:
                     # When negated, execute in the false_func branch
-                    self.chain = self.chain.when(condition, false_func=execute_stage)
+                    self.chain = await self.chain.when(condition, false_func=execute_stage)
                 else:
                     # Normal case: execute in the true_func branch
-                    self.chain = self.chain.when(condition, true_func=execute_stage)
+                    self.chain = await self.chain.when(condition, true_func=execute_stage)
             else:
                 # Regular stage - execute unconditionally
                 module_class = stage_spec
-                self.chain = self._execute_module(module_class, self.chain)
+                self.chain = await self._execute_module(module_class, self.chain)
 
-            self.chain.print_last()
+            # self.chain.print_last()
 
         # If output class is specified, construct it from prev_fields
         if self._output_class:
@@ -432,7 +432,7 @@ class PipelineExecutor:
         # Return the final chain with the output accessible via attribute
         return self.chain
 
-    def _execute_module(self, module_class, chain):
+    async def _execute_module(self, module_class, chain):
         """Execute a single module tand return updated chain"""
         # Check if this is a decorated Pydantic model (new style) or PromptModule (old style)
         if hasattr(module_class, '_prompt_template'):
@@ -444,7 +444,7 @@ class PipelineExecutor:
             preproc_func = getattr(module_class, '_preproc', None)
 
             # Use shared execution logic
-            return execute_stage_with_chain(
+            return await execute_stage_with_chain(
                 chain=chain,
                 template=template,
                 output_class=output_class,
@@ -455,7 +455,7 @@ class PipelineExecutor:
         else:
             # Old style: PromptModule subclass
             module = module_class(chain)
-            return module.execute()
+            return await module.execute()
 
     def __rshift__(self, other):
         """Support operator-based chaining with >> operator
@@ -490,18 +490,18 @@ class PipelineExecutor:
                             return self._execute_module(module_class, chain)
 
                         # Use chain.when() to conditionally execute
-                        if negate:
-                            # When negated, execute in the false_func branch
-                            self.chain = self.chain.when(condition, false_func=execute_stage)
-                        else:
-                            # Normal case: execute in the true_func branch
-                            self.chain = self.chain.when(condition, true_func=execute_stage)
+                        # NOTE: This code path is synchronous and cannot handle async chains properly
+                        # This __rshift__ code path is likely deprecated - use async execute() instead
+                        raise NotImplementedError(
+                            "Conditional stages in __rshift__ are not supported with async chains. "
+                            "Use the async execute() method instead."
+                        )
                     else:
                         # Regular stage - execute unconditionally
                         module_class = stage_spec
                         self.chain = self._execute_module(module_class, self.chain)
 
-                    self.chain.print_last()
+                    # self.chain.print_last()
 
                 # Materialize the output object and add to prev_fields
                 output_name = self._output_name or self._output_class.__name__.lower()

@@ -354,32 +354,32 @@ class CompiledExecutor:
     def __init__(self, graph: ExecutionGraph):
         self.graph = graph
         
-    def execute(self, chain,
+    async def execute(self, chain,
                      initial_fields: Dict[str, Any] = None):
         """Execute the compiled graph sequentially"""
         prev_fields = {**chain.prev_fields, **(initial_fields or {})}
 
         # Execute each node in topological order
         for node in self.graph.execution_order:
-            chain = self._execute_node(node, chain, prev_fields)
+            chain = await self._execute_node(node, chain, prev_fields)
             prev_fields = chain.prev_fields
 
         return chain
     
-    def _execute_node(self, node: ExecutionNode,
+    async def _execute_node(self, node: ExecutionNode,
                           chain,
                           prev_fields: Dict[str, Any]):
         """Execute a single node"""
         if isinstance(node, PromptNode):
-            return self._execute_prompt_node(node, chain, prev_fields)
+            return await self._execute_prompt_node(node, chain, prev_fields)
         elif isinstance(node, ConditionalNode):
-            return self._execute_conditional_node(node, chain, prev_fields)
+            return await self._execute_conditional_node(node, chain, prev_fields)
         elif isinstance(node, LoopNode):
-            return self._execute_loop_node(node, chain, prev_fields)
+            return await self._execute_loop_node(node, chain, prev_fields)
         else:
             raise ValueError(f"Unknown node type: {type(node)}")
     
-    def _execute_prompt_node(self, node: PromptNode,
+    async def _execute_prompt_node(self, node: PromptNode,
                                   chain,
                                   prev_fields: Dict[str, Any]):
         """Execute a prompt node"""
@@ -402,7 +402,7 @@ class CompiledExecutor:
         from chains.prompts.prompt_module import execute_stage_with_chain
 
         # Use shared execution logic (rendering happens inside generate())
-        return execute_stage_with_chain(
+        return await execute_stage_with_chain(
             chain=chain,
             template=node.template,
             output_class=node.response_format,
@@ -412,7 +412,7 @@ class CompiledExecutor:
             prev_fields=prev_fields
         )
     
-    def _execute_conditional_node(self, node: ConditionalNode,
+    async def _execute_conditional_node(self, node: ConditionalNode,
                                        chain,
                                        prev_fields: Dict[str, Any]):
         """Execute a conditional node"""
@@ -428,9 +428,9 @@ class CompiledExecutor:
         else:
             executor = CompiledExecutor(node.false_branch)
 
-        return executor.execute(chain, prev_fields)
+        return await executor.execute(chain, prev_fields)
 
-    def _execute_loop_node(self, node: LoopNode,
+    async def _execute_loop_node(self, node: LoopNode,
                                 chain,
                                 prev_fields: Dict[str, Any]):
         """Execute a loop node - runs subgraph N times, collects results"""
@@ -478,7 +478,7 @@ class CompiledExecutor:
 
             # 2. Execute the subgraph
             executor = CompiledExecutor(node.loop_body)
-            chain = executor.execute(chain, iter_prev_fields)
+            chain = await executor.execute(chain, iter_prev_fields)
 
             # 3. Collect outputs from this iteration
             if len(loop_output_names) == 1:
@@ -516,11 +516,11 @@ class ChainedPipeline:
             
         return self.compiled_graphs
     
-    def execute(self, chain):
+    async def execute(self, chain):
         """Execute the chained pipelines"""
         for graph in self.compiled_graphs:
             executor = CompiledExecutor(graph)
-            chain = executor.execute(chain)
+            chain = await executor.execute(chain)
 
         return chain
 
@@ -544,7 +544,7 @@ def monkeypatch_pipeline(pipeline_class):
             cache_key = id(self)
 
             # Override execute to use compiled mode
-            def compiled_execute():
+            async def compiled_execute():
                 # Check cache first, compile if not cached
                 if cache_key not in _compiled_graph_cache:
                     compiler = PipelineCompiler()
@@ -553,9 +553,9 @@ def monkeypatch_pipeline(pipeline_class):
                 # Get compiled graph from cache
                 graph = _compiled_graph_cache[cache_key]
 
-                # Run synchronous execution
+                # Run async execution
                 compiled_executor = CompiledExecutor(graph)
-                result = compiled_executor.execute(executor.chain, executor.chain.prev_fields)
+                result = await compiled_executor.execute(executor.chain, executor.chain.prev_fields)
 
                 # Handle set_output() - materialize the output class if specified
                 if executor._output_class:

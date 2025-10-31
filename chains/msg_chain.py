@@ -21,4 +21,7 @@ class MessageChain:
             from chains.msg_chains.oai_msg_chain import OpenAIMessageChain
             return OpenAIMessageChain(**kwargs)
         else:
-            raise ValueError(f"Model {model} not supported")
+            # Default to OpenAI-compatible chain for unknown models
+            # (supports local models, LiteLLM proxy, etc.)
+            from chains.msg_chains.oai_msg_chain import OpenAIMessageChain
+            return OpenAIMessageChain(**kwargs)

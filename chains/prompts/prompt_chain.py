@@ -13,13 +13,19 @@ from jinja2 import Environment
 
 
 def chain_method(func):
-    """Decorator to convert a function into a chainable method."""
+    """Decorator to convert a function into a chainable method that supports
+    both synchronous and asynchronous functions."""
 
-    @wraps(func)
-    def wrapper(self, *args, **kwargs):
-        return func(self, *args, **kwargs)
-
-    return wrapper
+    if inspect.iscoroutinefunction(func):
+        @wraps(func)
+        async def async_wrapper(self, *args, **kwargs):
+            return await func(self, *args, **kwargs)
+        return async_wrapper
+    else:
+        @wraps(func)
+        def wrapper(self, *args, **kwargs):
+            return func(self, *args, **kwargs)
+        return wrapper
 
 
 _jinja_env = Environment()
@@ -105,14 +111,17 @@ class PromptChain:
         return func(self)
 
     @chain_method
-    def when(self, condition, true_func: Optional[Callable]=None, false_func: Optional[Callable]=None):
+    async def when(self, condition, true_func: Optional[Callable]=None, false_func: Optional[Callable]=None):
         """Conditionally execute true_func or false_func based on condition
-        
+
         Args:
             condition: Either a callable that takes the chain and returns bool,
                       or a string key to look up in prev_fields (must be bool)
             true_func: Function to call if condition is True
             false_func: Function to call if condition is False (optional, defaults to identity)
+
+        Returns:
+            Result of calling the chosen function (awaited if async)
         """
         if isinstance(condition, str):
             # Look up the condition in prev_fields
@@ -123,14 +132,20 @@ class PromptChain:
             # Assume it's a callable
             should_execute_true = condition(self)
         assert true_func is not None or false_func is not None, "At least one of true_func or false_func must be provided"
-        
+
         if false_func is None:
             false_func = lambda c: c
         if true_func is None:
             true_func = lambda c: c
-            
-        
-        return true_func(self) if should_execute_true else false_func(self)
+
+        # Call the chosen function
+        result = true_func(self) if should_execute_true else false_func(self)
+
+        # If it's a coroutine, await it
+        if inspect.iscoroutine(result):
+            result = await result
+
+        return result
 
     @chain_method
     def post_last(self, **named_transformations):
@@ -208,7 +223,7 @@ class PromptChain:
         return self
 
     @chain_method
-    def generate(self):
+    async def generate(self):
         # Use the message chain function if provided, otherwise create a default one
         if self.msg_chain_func is not None:
             chain = self.msg_chain_func()
@@ -225,9 +240,12 @@ class PromptChain:
         if self.curr_prompt.response_format is not None:
             chain = chain.with_structure(self.curr_prompt.response_format)
 
-        # Generate response
-        chain = chain.generate()
-        print("Step")
+        # Generate response (await if chain.generate is async)
+        if inspect.iscoroutinefunction(chain.generate):
+            chain = await chain.generate()
+        else:
+            chain = chain.generate()
+        # print("Step")
         # Get the output from the chain
         output = chain.last_response
         # Add the response to the response_list
@@ -242,10 +260,10 @@ class PromptChain:
         )
 
     @chain_method
-    def gen_prompt(self, template: str):
+    async def gen_prompt(self, template: str):
         """Generate a response and then use it to create a new prompt in the chain."""
         # First generate the response from the current prompt
-        updated_chain = self.generate()
+        updated_chain = await self.generate()
 
         # Then create a new prompt with the given template on the updated chain
         return updated_chain.prompt(template)

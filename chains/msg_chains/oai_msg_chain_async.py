@@ -217,6 +217,7 @@ class OpenAIAsyncMessageChain:
     tools_list: Optional[List[Any]] = None
     tools_mapping: Optional[Dict[str, Any]] = None
     base_url: Optional[str] = None
+    api_key: Optional[str] = None
     max_tokens: int = 4096
     session_id: str = field(default_factory=generate_session_id)
     stream_queue: Optional[Queue] = None
@@ -417,11 +418,17 @@ class OpenAIAsyncMessageChain:
                     base_url=self.base_url, api_key=os.getenv("OPENROUTER_API_KEY")
                 )
             elif self.base_url is not None:
+                # Use provided api_key or fall back to "lm-studio"
+                api_key = self.api_key if self.api_key is not None else "lm-studio"
                 client = AsyncOpenAI(
-                    base_url=self.base_url, api_key="lm-studio"
-                )  # Or a configurable key for other base URLs
+                    base_url=self.base_url, api_key=api_key
+                )
             else:
-                client = AsyncOpenAI()
+                # Use provided api_key or let OpenAI client use environment variable
+                if self.api_key is not None:
+                    client = AsyncOpenAI(api_key=self.api_key)
+                else:
+                    client = AsyncOpenAI()
             msgs = self.serialize()
 
             # Prepare common parameters
