@@ -1,38 +1,40 @@
-from typing import Optional, Union, Dict, Any
-from pydantic import BaseModel, Field
-from anytree import Node, RenderTree, PreOrderIter
+from typing import Union
+from pydantic import BaseModel
+from anytree import Node, RenderTree
+import json
 
 
-class LeafNode:
+class LeafNode(BaseModel):
     """Terminal node that sets task_id"""
-    def __init__(self, name: str, task_id: int):
-        self.name = name
-        self.task_id = task_id
+    name: str
+    task_id: int
+
+    def __init__(self, name: str = None, task_id: int = None, **data):
+        if name is not None and task_id is not None:
+            super().__init__(name=name, task_id=task_id, **data)
+        else:
+            super().__init__(**data)
 
 
-class FwdNode:
+class FwdNode(BaseModel):
     """Forward reference to another node"""
-    def __init__(self, node_name: str):
-        self.node_name = node_name
+    node_name: str
+
+    def __init__(self, node_name: str = None, **data):
+        if node_name is not None:
+            super().__init__(node_name=node_name, **data)
+        else:
+            super().__init__(**data)
 
 
-class DecisionNode:
+class DecisionNode(BaseModel):
     """Metadata for a decision node"""
-    def __init__(
-        self,
-        node_name: str,
-        variable_name: str,
-        description: str,
-        prompt: str,
-        true_branch: Union[LeafNode, FwdNode],
-        false_branch: Union[LeafNode, FwdNode]
-    ):
-        self.node_name = node_name
-        self.variable_name = variable_name
-        self.description = description
-        self.prompt = prompt
-        self.true_branch = true_branch
-        self.false_branch = false_branch
+    node_name: str
+    variable_name: str
+    description: str
+    prompt: str
+    true_branch: Union[LeafNode, FwdNode]
+    false_branch: Union[LeafNode, FwdNode]
 
 
 class PromptTree:
@@ -130,8 +132,8 @@ class PromptTree:
             # Process true branch
             if isinstance(spec.true_branch, LeafNode):
                 # Create a terminal node for the leaf
-                leaf = Node(f"{name}_true_leaf", parent=node,
-                           data=spec.true_branch, branch_type="true")
+                Node(f"{name}_true_leaf", parent=node,
+                     data=spec.true_branch, branch_type="true")
             elif isinstance(spec.true_branch, FwdNode):
                 # Link to another decision node by parenting it
                 target_name = spec.true_branch.node_name
@@ -143,14 +145,14 @@ class PromptTree:
                         target_node.branch_type = "true"
                     else:
                         # Create a reference node if already parented elsewhere
-                        ref = Node(f"{name}_true_ref", parent=node,
-                                 data=FwdNode(target_name), branch_type="true")
+                        Node(f"{name}_true_ref", parent=node,
+                             data=FwdNode(target_name), branch_type="true")
 
             # Process false branch
             if isinstance(spec.false_branch, LeafNode):
                 # Create a terminal node for the leaf
-                leaf = Node(f"{name}_false_leaf", parent=node,
-                           data=spec.false_branch, branch_type="false")
+                Node(f"{name}_false_leaf", parent=node,
+                     data=spec.false_branch, branch_type="false")
             elif isinstance(spec.false_branch, FwdNode):
                 # Link to another decision node by parenting it
                 target_name = spec.false_branch.node_name
@@ -162,12 +164,30 @@ class PromptTree:
                         target_node.branch_type = "false"
                     else:
                         # Create a reference node if already parented elsewhere
-                        ref = Node(f"{name}_false_ref", parent=node,
-                                 data=FwdNode(target_name), branch_type="false")
+                        Node(f"{name}_false_ref", parent=node,
+                             data=FwdNode(target_name), branch_type="false")
                     
         self.compiled = True
     
+    def export(self):
+        """Export tree to JSON string"""
+        if not self.compiled:
+            self.compile()
 
+        def node_to_dict(node):
+            """Recursively convert anytree Node to dictionary"""
+            result = {
+                'name': node.name,
+                'data': node.data.model_dump() if isinstance(node.data, BaseModel) else node.data,
+                'branch_type': getattr(node, 'branch_type', None)
+            }
+
+            if node.children:
+                result['children'] = [node_to_dict(child) for child in node.children]
+
+            return result
+
+        return json.dumps(node_to_dict(self.root), indent=2)
             
     def visualize(self):
         """visualization using anytree's RenderTree"""
