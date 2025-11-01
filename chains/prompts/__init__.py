@@ -14,6 +14,12 @@ from chains.prompts.compiled_prompt import (
     CompiledExecutor,
     monkeypatch_pipeline,
 )
+from chains.prompts.prompt_tree import (
+    PromptTree,
+    DecisionNode,
+    LeafNode,
+    FwdNode,
+)
 
 __all__ = [
     "PromptChain",
@@ -28,5 +34,9 @@ __all__ = [
     "PipelineCompiler",
     "CompiledExecutor",
     "monkeypatch_pipeline",
-    "serialize_chain"
+    "serialize_chain",
+    "PromptTree",
+    "DecisionNode",
+    "LeafNode",
+    "FwdNode",
 ]
