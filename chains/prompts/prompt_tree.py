@@ -1,3 +1,53 @@
+from dataclasses import dataclass, field, replace, asdict, is_dataclass
+from typing import List, Dict, Union, Any, Optional, Tuple, Type, Callable
+
+from functools import wraps
+import inspect
+import os
+import sys
+import json
+
+from pydantic import BaseModel, Field
+from jinja2 import Environment
+# import logging
+
+
+# logging.basicConfig(level=logging.INFO)
+# logger = logging.getLogger(__name__)
+
+# Enable DEBUG logging for openai and httpx to see retry errors
+# logging.getLogger("openai").setLevel(logging.DEBUG)
+# logging.getLogger("httpx").setLevel(logging.DEBUG)
+def chain_method(func):
+    """Decorator to convert a function into a chainable method that supports
+    both synchronous and asynchronous functions."""
+
+    if inspect.iscoroutinefunction(func):
+        @wraps(func)
+        async def async_wrapper(self, *args, **kwargs):
+            return await func(self, *args, **kwargs)
+        return async_wrapper
+    else:
+        @wraps(func)
+        def wrapper(self, *args, **kwargs):
+            return func(self, *args, **kwargs)
+        return wrapper
+
+
+_jinja_env = Environment()
+_jinja_env.globals['str'] = str
+_jinja_env.globals['len'] = len
+_jinja_env.globals['int'] = int
+_jinja_env.globals['float'] = float
+_jinja_env.globals['list'] = list
+_jinja_env.globals['dict'] = dict
+_jinja_env.globals['enumerate'] = enumerate
+
+def replace_strs(s: str, kwargs: Dict[str, Any]) -> str:
+    template = _jinja_env.from_string(s)
+    return template.render(**kwargs)
+
+
 from typing import Union
 from pydantic import BaseModel
 from anytree import Node, RenderTree
@@ -56,13 +106,13 @@ class PromptTree:
         tree.compile()  # Build the internal tree representation
         pipeline = tree.to_pipeline()
     """
-    
+
     def __init__(self):
         self.node_specs = {}  # Store node specifications before compilation
         self.root = None  # Root of the anytree
         self.compiled = False
         self._node_map = {}  # Map from node_name to anytree Node
-        
+
     def add_node(
         self,
         node_name: str,
@@ -85,17 +135,17 @@ class PromptTree:
         if is_root or len(self.node_specs) == 1:
             self.root_name = node_name
         self.compiled = False  # Invalidate compilation
-        
+
     def compile(self):
         """Build the anytree representation from node specifications"""
         if not self.node_specs:
             raise ValueError("No nodes have been added to the tree")
-            
+
         # Create anytree nodes for all decision nodes
         self._node_map = {}
         for name, spec in self.node_specs.items():
             self._node_map[name] = Node(name, data=spec)
-            
+
         # Set root
         if not hasattr(self, 'root_name'):
             # If no root specified, use the first node or find one that's not referenced
@@ -105,16 +155,16 @@ class PromptTree:
                     referenced.add(spec.true_branch.node_name)
                 if isinstance(spec.false_branch, FwdNode):
                     referenced.add(spec.false_branch.node_name)
-            
+
             roots = set(self.node_specs.keys()) - referenced
             if roots:
                 self.root_name = list(roots)[0]
             else:
                 # Fall back to first node if there's a cycle
                 self.root_name = list(self.node_specs.keys())[0]
-                
+
         self.root = self._node_map[self.root_name]
-        
+
         # Build tree structure by processing branches
         # First pass: identify which nodes should be parented
         parented_nodes = set()
@@ -166,9 +216,9 @@ class PromptTree:
                         # Create a reference node if already parented elsewhere
                         Node(f"{name}_false_ref", parent=node,
                              data=FwdNode(target_name), branch_type="false")
-                    
+
         self.compiled = True
-    
+
     def export(self):
         """Export tree to JSON string"""
         if not self.compiled:
@@ -188,7 +238,7 @@ class PromptTree:
             return result
 
         return json.dumps(node_to_dict(self.root), indent=2)
-            
+
     def visualize(self):
         """visualization using anytree's RenderTree"""
         if not self.compiled:
@@ -210,13 +260,13 @@ class PromptTree:
                 branch = getattr(node, 'branch_type', '?')
                 print(f"{pre}[{branch}] -> {node.data.node_name}")
 
-    async def execute(self, chain, initial_fields: dict = None) -> tuple[int, dict]:
+    async def execute(self, chain_constructor, initial_fields: dict = None) -> tuple[int, dict]:
         """
         Execute the decision tree starting from root.
 
         Args:
-            chain: PromptChain instance for LLM execution
-            initial_fields: Optional initial prev_fields
+            chain_constructor: Callable that returns a MessageChain instance
+            initial_fields: Optional initial fields
 
         Returns:
             tuple: (task_id, all_decisions) where all_decisions contains
@@ -225,10 +275,8 @@ class PromptTree:
         if not self.compiled:
             self.compile()
 
-        # Initialize chain with any starting fields
-        if initial_fields:
-            chain = chain.set_prev_fields({**chain.prev_fields, **initial_fields})
-
+        # Track all fields locally (initial fields + decisions)
+        context = initial_fields.copy() if initial_fields else {}
         decisions = {}  # Track all decisions made during traversal
         current_node = self.root
 
@@ -249,19 +297,14 @@ class PromptTree:
             if isinstance(node_data, DecisionNode):
                 # Execute the prompt to get a boolean decision
                 decision = await self._execute_decision(
-                    chain,
+                    chain_constructor,
                     node_data,
-                    decisions
+                    context
                 )
 
                 # Store the decision
                 decisions[node_data.variable_name] = decision
-
-                # Update chain with this decision
-                chain = chain.set_prev_fields({
-                    **chain.prev_fields,
-                    node_data.variable_name: decision
-                })
+                context[node_data.variable_name] = decision
 
                 # Follow the appropriate branch
                 current_node = self._follow_branch(current_node, decision)
@@ -270,9 +313,9 @@ class PromptTree:
 
     async def _execute_decision(
         self,
-        chain,
+        chain_constructor,
         node_data: DecisionNode,
-        prev_decisions: dict
+        context: dict
     ) -> bool:
         """
         Execute a decision node's prompt and return boolean result.
@@ -280,26 +323,45 @@ class PromptTree:
         Uses a simple Yes/No prompt with structured output.
         """
         # Define response format for boolean decisions
-        class Decision(BaseModel):
-            reasoning: str
-            decision: bool
-
-        # Render the prompt with any previous decisions in context
-        from chains.prompts.prompt_chain import replace_strs
-        context = {**chain.prev_fields, **prev_decisions}
-        rendered_prompt = replace_strs(node_data.prompt, context)
-
-        # Execute the prompt
-        result_chain = await (
-            chain
-            .prompt(rendered_prompt)
-            .with_structure(Decision)
-            .generate()
+        # Create a dynamic BaseModel class with the field name matching variable_name
+        field_name = node_data.variable_name
+        Decision = type(
+            node_data.node_name.title().replace('_', ''),
+            (BaseModel,),
+            {
+                '__annotations__': {field_name: bool},
+                field_name: Field(description=node_data.description)
+            }
         )
 
-        # Extract the decision
+        # Render the prompt with the current context
+        rendered_prompt = replace_strs(node_data.prompt, context)
+
+        chain =  chain_constructor()
+
+        result_chain = await (
+            chain
+            .with_structure(Decision)
+            .user(rendered_prompt)
+            .generate_bot()
+        )
+
+
+        """
+
+            "llm.openai.response_format": "{'type': 'json_schema', 'json_schema': {'schema': {'description': 'Third-level decision: For multi-class tasks, determine if professional or demographic', 'properties': {'i
+            s_professional': {'description': 'True if professional domain (resumes, job descriptions), False if demographic domain (age groups, personal characteristics)', 'title': 'Is Professional', 'type': 'boolean'}}, 'r
+            equired': ['is_professional'], 'title': 'DomainDecision', 'type': 'object', 'additionalProperties': False}, 'name': 'DomainDecision', 'strict': True}}",
+            """
+        # import tempfile
+        # with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
+        #     json.dump(result_chain.serialize(), f, indent=2)
+        #     print(f"Serialized chain saved to: {f.name}")
+
+
+        # Extract the decision using the dynamic field name
         decision_obj = result_chain.response_list[-1]
-        return decision_obj.decision
+        return getattr(decision_obj, field_name)
 
     def _follow_branch(self, decision_node, decision: bool):
         """
@@ -317,14 +379,13 @@ class PromptTree:
 
         raise ValueError(f"No {'true' if decision else 'false'} branch found for node {decision_node.name}")
 
-
 # ============================================================================
-# Usage Example
+# Simple Test
 # ============================================================================
 
-async def example_usage():
-    """Example of using PromptTree with async execution"""
-    from chains.prompts.prompt_chain import PromptChain
+async def test_simple_tree():
+    """Test a simple decision tree with OpenAIAsyncMessageChain"""
+    from chains.msg_chains.oai_msg_chain_async import OpenAIAsyncMessageChain
 
     # Build a simple decision tree
     tree = PromptTree()
@@ -333,28 +394,36 @@ async def example_usage():
         node_name="sentiment_check",
         variable_name="is_positive",
         description="Check if the input has positive sentiment",
-        prompt="Is the following text positive in sentiment? {{input_text}}",
+        prompt="Is the following text positive in sentiment? Answer with your analysis.\n\nText: {{input_text}}",
         true_branch=LeafNode(name="positive", task_id=1),
         false_branch=LeafNode(name="negative", task_id=2),
         is_root=True
     )
 
+    tree.compile()
     tree.visualize()
 
-    # Execute the tree directly
-    chain = PromptChain()
+    # Execute the tree with OpenAIAsyncMessageChain
+    chain_constructor = lambda: OpenAIAsyncMessageChain(
+        model_name="gpt-4o-mini",
+        max_tokens=500
+    )
 
     task_id, decisions = await tree.execute(
-        chain,
+        chain_constructor,
         initial_fields={"input_text": "I love this product!"}
     )
 
     print(f"\nRouted to task_id: {task_id}")
     print(f"Decisions made: {decisions}")
-    # Output: Routed to task_id: 1
-    #         Decisions made: {'is_positive': True}
+    print(f"Expected: task_id=1 (positive sentiment)")
+
+    assert task_id == 1, f"Expected task_id=1, got {task_id}"
+    assert decisions.get("is_positive") == True, f"Expected is_positive=True"
+
+    print("✅ Test passed!")
 
 
 if __name__ == "__main__":
     import asyncio
-    asyncio.run(example_usage())
+    asyncio.run(test_simple_tree())
