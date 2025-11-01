@@ -42,6 +42,41 @@ def replace_strs(s: str, kwargs: Dict[str, Any]) -> str:
     return template.render(**kwargs)
 
 
+def serialize_chain(chain: 'PromptChain') -> Dict[str, Any]:
+    data = {}
+
+
+    def _serialize(value):
+        if isinstance(value, BaseModel):
+            return value.model_dump()
+        if isinstance(value, dict):
+            return {k: _serialize(v) for k, v in value.items()}
+        if isinstance(value, (list, tuple, set)):
+            serialized = [_serialize(v) for v in value]
+            return serialized if isinstance(value, list) else list(serialized)
+        if is_dataclass(value):
+            return asdict(value)
+        return value
+
+    # Convert prev_fields to serializable format
+    fields = {key: _serialize(value) for key, value in chain.prev_fields.items()}
+    data['fields'] = fields
+
+    # Convert responses to serializable format
+    responses = [_serialize(resp) for resp in chain.response_list]
+    # Always include prompts for context
+    prompts = []
+    for prompt,resp in zip(chain.prev_prompts, responses):
+        prompts.append({
+            'template': prompt.template,
+            'rendered': prompt.rendered,
+            'response_format': prompt.response_format.__name__ if prompt.response_format else None,
+            "response": resp
+        })
+    data['prompts'] = prompts
+    
+    return data
+
 @dataclass(frozen=True)
 class Prompt:
     template: str
@@ -277,42 +312,9 @@ class PromptChain:
             mode: What to save - 'responses', 'fields', or 'both' (default)
             indent: JSON indentation level (default: 2)
         """
-        data = {}
 
 
-
-        
-        
-        def _serialize(value):
-            if isinstance(value, BaseModel):
-                return value.model_dump()
-            if isinstance(value, dict):
-                return {k: _serialize(v) for k, v in value.items()}
-            if isinstance(value, (list, tuple, set)):
-                serialized = [_serialize(v) for v in value]
-                return serialized if isinstance(value, list) else list(serialized)
-            if is_dataclass(value):
-                return asdict(value)
-            return value
-
-        # Convert prev_fields to serializable format
-        fields = {key: _serialize(value) for key, value in self.prev_fields.items()}
-        data['fields'] = fields
-
-        # Convert responses to serializable format
-        responses = [_serialize(resp) for resp in self.response_list]
-        # Always include prompts for context
-        prompts = []
-        for prompt,resp in zip(self.prev_prompts, responses):
-            prompts.append({
-                'template': prompt.template,
-                'rendered': prompt.rendered,
-                'response_format': prompt.response_format.__name__ if prompt.response_format else None,
-                "response": resp
-            })
-        data['prompts'] = prompts
-
-
+        data = serialize_chain(self)
 
         with open(file_path, 'w') as f:
             json.dump(data, f, indent=indent)

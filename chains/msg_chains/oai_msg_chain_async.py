@@ -435,9 +435,9 @@ class OpenAIAsyncMessageChain:
             api_params = {
                 "model": self.model_name,
                 "messages": msgs,
-                "max_tokens": self.max_tokens,
-                "temperature": 1.0,
             }
+            if self.max_tokens is not None:
+                api_params["max_tokens"] = self.max_tokens
 
             # Only add tools if they exist
             if self.tools_list is not None:

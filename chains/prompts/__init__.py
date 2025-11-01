@@ -1,4 +1,4 @@
-from chains.prompts.prompt_chain import PromptChain
+from chains.prompts.prompt_chain import PromptChain, serialize_chain
 from chains.prompts.prompt_module import (
     Pipeline,
     PromptModule,
@@ -28,4 +28,5 @@ __all__ = [
     "PipelineCompiler",
     "CompiledExecutor",
     "monkeypatch_pipeline",
+    "serialize_chain"
 ]
